@@ -1,48 +1,57 @@
 import { useState, useEffect } from 'react';
-import api from '../api/axios';
+import { useRailOps } from '../context/RailOpsContext';
 import DataSourceBadge from '../components/DataSourceBadge';
 import PriorityScoreBar from '../components/PriorityScoreBar';
 import Toast from '../components/Toast';
 
 export default function ApprovalPipeline() {
-  const [defects, setDefects] = useState([]);
+  const {
+    defects,
+    isLoading: loading,
+    handleApproveDefect,
+    handleRejectDefect,
+    handleBundleDefect
+  } = useRailOps();
+
   const [selectedDefect, setSelectedDefect] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' });
 
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      const res = await api.get('/defects');
-      const pending = res.data.filter(d => d.status === 'PENDING').sort((a,b) => b.priorityScore - a.priorityScore);
-      setDefects(res.data);
-      if (pending.length > 0 && !selectedDefect) setSelectedDefect(pending[0]);
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
-  };
+  const pending = defects.filter(d => d.status === 'PENDING').sort((a,b) => b.priorityScore - a.priorityScore);
+  const executed = defects.filter(d => d.status === 'EXECUTED');
+  const bundled = defects.filter(d => d.status === 'BUNDLED');
+  const scheduled = defects.filter(d => d.status === 'SCHEDULED');
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => {
+    if (pending.length > 0) {
+      if (!selectedDefect || !pending.find(d => d._id === selectedDefect._id)) {
+        setSelectedDefect(pending[0]);
+      }
+    } else {
+      setSelectedDefect(null);
+    }
+  }, [pending, selectedDefect]);
 
   const handleAction = async (status) => {
     if (!selectedDefect) return;
     setActionLoading(true);
     try {
-      await api.put(`/defects/${selectedDefect._id}`, { status });
-      setToast({ visible: true, message: `Defect updated to ${status}`, type: 'success' });
-      setSelectedDefect(null);
-      await fetchData();
+      if (status === 'EXECUTED') {
+        await handleApproveDefect(selectedDefect._id);
+        setToast({ visible: true, message: `Defect approved & executed — Block Generated`, type: 'success' });
+      } else if (status === 'REJECTED') {
+        await handleRejectDefect(selectedDefect._id);
+        setToast({ visible: true, message: `Defect marked as REJECTED`, type: 'info' });
+      } else if (status === 'BUNDLED') {
+        await handleBundleDefect(selectedDefect._id);
+        setToast({ visible: true, message: `Defect marked as BUNDLED`, type: 'info' });
+      }
     } catch (e) {
       setToast({ visible: true, message: `Error: ${e.message}`, type: 'error' });
     } finally {
       setActionLoading(false);
     }
   };
-
-  const pending = defects.filter(d => d.status === 'PENDING').sort((a,b) => b.priorityScore - a.priorityScore);
-  const executed = defects.filter(d => d.status === 'EXECUTED');
-  const bundled = defects.filter(d => d.status === 'BUNDLED');
-  const scheduled = defects.filter(d => d.status === 'SCHEDULED'); // Although we auto-approve to EXECUTED
 
   const getPriorityClass = (p) => {
     if (p === 'CRITICAL') return 'bg-red-500/20 text-red-400';

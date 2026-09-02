@@ -1,75 +1,93 @@
-import { useState, useEffect } from 'react';
-import api from '../api/axios';
+import { useState } from 'react';
+import { useRailOps } from '../context/RailOpsContext';
 import KPICard from '../components/KPICard';
 import NativeTimeline from '../components/NativeTimeline';
 import ApprovalDrawer from '../components/ApprovalDrawer';
 import Toast from '../components/Toast';
 
 export default function Dashboard() {
-  const [data, setData] = useState({
-    defects: [],
-    blocks: [],
-    oldestPending: null,
-    conflicts: []
-  });
-  const [loading, setLoading] = useState(true);
+  const {
+    defects,
+    blocks,
+    conflicts,
+    isLoading: loading,
+    activityFeed,
+    handleApproveDefect,
+    handleRejectDefect,
+    handleRescheduleBlock,
+  } = useRailOps();
+
   const [actionLoading, setActionLoading] = useState(false);
   const [toast, setToast] = useState({ visible: false, message: '', type: 'success' });
-  const [activityFeed, setActivityFeed] = useState([]);
+  const [activeConflict, setActiveConflict] = useState(null);
+  const [rescheduleLoading, setRescheduleLoading] = useState(false);
 
-  const fetchData = async () => {
+  // -1: Yesterday, 0: Today, 1: Tomorrow
+  const [selectedDayOffset, setSelectedDayOffset] = useState(0);
+
+  // Derive active target date object and display string
+  const targetDate = new Date();
+  targetDate.setDate(targetDate.getDate() + selectedDayOffset);
+
+  const formattedDateStr = targetDate.toLocaleDateString('en-GB', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+
+  const filteredBlocks = blocks.filter((block) => {
+    if (!block.startTime) return false;
+    const blockDate = new Date(block.startTime);
+    return (
+      blockDate.getFullYear() === targetDate.getFullYear() &&
+      blockDate.getMonth() === targetDate.getMonth() &&
+      blockDate.getDate() === targetDate.getDate()
+    );
+  });
+
+  const handleReschedule = async (blockId) => {
+    const targetBlock = activeConflict || blocks.find(b => b._id === blockId);
+    const id = blockId || targetBlock?._id;
+    if (!id || !targetBlock) return;
+
     try {
-      setLoading(true);
-      const [defRes, blockRes, pendRes, confRes] = await Promise.all([
-        api.get('/defects'),
-        api.get('/blocks/today-tomorrow'),
-        api.get('/defects/pending'),
-        api.get('/optimization/conflicts')
-      ]);
-      setData({
-        defects: defRes.data,
-        blocks: blockRes.data,
-        oldestPending: pendRes.data,
-        conflicts: confRes.data
+      setRescheduleLoading(true);
+      const s = new Date(targetBlock.startTime);
+      const e = new Date(targetBlock.endTime);
+      const newStartTime = new Date(s.getTime() + 30 * 60 * 1000);
+      const newEndTime = new Date(e.getTime() + 30 * 60 * 1000);
+
+      await handleRescheduleBlock(id, newStartTime, newEndTime);
+
+      setToast({
+        visible: true,
+        message: `✓ Conflict auto-resolved: Block shifted +30 mins`,
+        type: 'success'
       });
-    } catch (e) {
-      console.error(e);
+      setActiveConflict(null);
+    } catch (err) {
+      console.error('Failed to reschedule block:', err);
+      setToast({
+        visible: true,
+        message: `Failed to reschedule: ${err.response?.data?.error || err.message}`,
+        type: 'error'
+      });
     } finally {
-      setLoading(false);
+      setRescheduleLoading(false);
     }
   };
-
-  useEffect(() => {
-    fetchData();
-  }, []);
 
   const handleAction = async (id, status) => {
     try {
       setActionLoading(true);
-      const response = await api.put(`/defects/${id}`, { status });
-      const data = response.data;
-      setToast({ visible: true, message: `Defect marked as ${status}`, type: status === 'EXECUTED' ? 'success' : 'info' });
-      
       if (status === 'EXECUTED') {
-        setActivityFeed(prev => [{
-          id: Date.now(),
-          action: 'APPROVED',
-          defectCode: data.defect?.defectCode || id.slice(-8).toUpperCase(),
-          assetId: data.defect?.assetId,
-          blockCode: data.block?.blockCode || 'BLK-AUTO',
-          timestamp: new Date()
-        }, ...prev].slice(0, 10));
+        await handleApproveDefect(id);
+        setToast({ visible: true, message: `Defect approved & executed — Block Created`, type: 'success' });
       } else {
-        setActivityFeed(prev => [{
-          id: Date.now(),
-          action: 'REJECTED',
-          defectCode: data.defect?.defectCode || data.defectCode || id.slice(-8).toUpperCase(),
-          assetId: data.defect?.assetId || data.assetId,
-          blockCode: null,
-          timestamp: new Date()
-        }, ...prev].slice(0, 10));
+        await handleRejectDefect(id);
+        setToast({ visible: true, message: `Defect marked as ${status}`, type: 'info' });
       }
-      await fetchData();
     } catch (e) {
       setToast({ visible: true, message: `Failed: ${e.message}`, type: 'error' });
     } finally {
@@ -77,11 +95,13 @@ export default function Dashboard() {
     }
   };
 
-  if (loading && data.defects.length === 0) {
+  if (loading && defects.length === 0) {
     return <div className="h-full flex items-center justify-center text-slate-500 font-mono-rail text-sm">LOADING ENGINE...</div>;
   }
 
-  const { defects, blocks, oldestPending, conflicts } = data;
+  const oldestPending = defects
+    .filter(d => d.status === 'PENDING')
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))[0] || null;
   
   const totalPending = defects.filter(d => d.status === 'PENDING').length;
   const criticalCount = defects.filter(d => d.priority === 'CRITICAL' && d.status === 'PENDING').length;
@@ -190,13 +210,61 @@ export default function Dashboard() {
       {/* Column 2 - Center Column */}
       <div className="flex flex-col gap-3 h-full overflow-hidden">
         <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden flex flex-col h-full">
-          <div className="px-4 py-2.5 border-b border-slate-700 flex items-center justify-between flex-shrink-0">
-            <span className="font-mono-rail text-xs font-semibold text-slate-300 tracking-wide">
-              TRACK BLOCK SCHEDULE
-            </span>
+          <div className="px-4 py-2 border-b border-slate-700 flex items-center justify-between flex-shrink-0">
+            <div className="flex items-center gap-2.5">
+              <span className="font-mono-rail text-xs font-semibold text-slate-300 tracking-wide">
+                TRACK BLOCK SCHEDULE
+              </span>
+              <span className="font-mono-rail text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded">
+                {formattedDateStr}
+              </span>
+            </div>
+
+            {/* 3-Button Segmented Pill Layout */}
+            <div className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900/80 p-1">
+              <button
+                type="button"
+                onClick={() => setSelectedDayOffset(-1)}
+                className={`rounded px-3 py-1 text-xs font-mono transition-all cursor-pointer ${
+                  selectedDayOffset === -1
+                    ? 'bg-emerald-500 font-bold text-slate-900 shadow'
+                    : 'bg-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                YESTERDAY
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedDayOffset(0)}
+                className={`rounded px-3 py-1 text-xs font-mono transition-all cursor-pointer ${
+                  selectedDayOffset === 0
+                    ? 'bg-emerald-500 font-bold text-slate-900 shadow'
+                    : 'bg-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                TODAY
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedDayOffset(1)}
+                className={`rounded px-3 py-1 text-xs font-mono transition-all cursor-pointer ${
+                  selectedDayOffset === 1
+                    ? 'bg-emerald-500 font-bold text-slate-900 shadow'
+                    : 'bg-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                TOMORROW
+              </button>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto">
-            <NativeTimeline blocks={blocks} />
+            <NativeTimeline 
+              blocks={filteredBlocks} 
+              targetDate={targetDate}
+              selectedDayOffset={selectedDayOffset}
+              onBlockClick={setActiveConflict} 
+              setActiveConflict={setActiveConflict} 
+            />
           </div>
         </div>
       </div>
@@ -251,6 +319,114 @@ export default function Dashboard() {
       </div>
 
       <Toast message={toast.message} type={toast.type} visible={toast.visible} onHide={() => setToast({ ...toast, visible: false })} />
+
+      {/* ── CONFLICT RESOLUTION MODAL ── */}
+      {activeConflict && (() => {
+        const s = new Date(activeConflict.startTime);
+        const e = new Date(activeConflict.endTime);
+        const sStr = s.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const eStr = e.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const newStart = new Date(s.getTime() + 30 * 60 * 1000);
+        const newEnd = new Date(e.getTime() + 30 * 60 * 1000);
+        const newStartStr = newStart.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const newEndStr = newEnd.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        return (
+          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 slide-in">
+            <div className="bg-slate-800 border border-slate-700 rounded-xl p-6 max-w-md w-full shadow-2xl relative flex flex-col gap-4">
+              
+              {/* Header */}
+              <div className="flex items-start justify-between border-b border-slate-700/80 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-red-500/20 border border-red-500/40 flex items-center justify-center text-red-400 font-mono-rail text-sm">
+                    ⚠
+                  </div>
+                  <div>
+                    <h3 className="font-mono-rail text-sm font-bold text-red-400 uppercase tracking-wider">
+                      Conflict Detected
+                    </h3>
+                    <div className="font-mono-rail text-[10px] text-slate-400 mt-0.5">
+                      Track Schedule Overlap on {activeConflict.corridorId || 'Corridor'}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveConflict(null)}
+                  className="text-slate-400 hover:text-slate-200 font-mono-rail text-sm p-1 rounded hover:bg-slate-700/50 transition-colors cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Target Details */}
+              <div className="bg-slate-900/70 border border-slate-700/80 rounded-lg p-4 flex flex-col gap-2.5 font-mono-rail text-xs">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Target Asset ID:</span>
+                  <span className="font-bold text-emerald-400">{activeConflict.assetId}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Department:</span>
+                  <span className="font-bold text-blue-400">{activeConflict.department}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Block Code:</span>
+                  <span className="text-slate-300 font-semibold">{activeConflict.blockCode || activeConflict._id?.substring(0, 8)}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Corridor:</span>
+                  <span className="text-slate-300">{activeConflict.corridorId}</span>
+                </div>
+
+                <div className="border-t border-slate-800 pt-2.5 flex flex-col gap-1">
+                  <span className="text-slate-400 text-[10px] uppercase tracking-wider">
+                    Conflicting Time Window:
+                  </span>
+                  <span className="font-bold text-red-400 text-sm">
+                    {sStr} – {eStr}
+                  </span>
+                </div>
+
+                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded p-2.5 flex flex-col gap-1 mt-1">
+                  <span className="text-emerald-400 text-[9px] uppercase tracking-wider font-bold">
+                    Target Auto-Resolved Window (+30 Mins):
+                  </span>
+                  <span className="font-bold text-emerald-300 text-xs">
+                    {newStartStr} – {newEndStr}
+                  </span>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  onClick={() => setActiveConflict(null)}
+                  className="font-mono-rail text-xs text-slate-400 hover:text-slate-200 px-4 py-2.5 rounded-lg border border-slate-700 hover:bg-slate-700/50 transition-colors cursor-pointer"
+                >
+                  Dismiss
+                </button>
+                <button
+                  onClick={() => handleReschedule(activeConflict._id)}
+                  disabled={rescheduleLoading}
+                  className="bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-mono-rail font-bold text-xs py-2.5 px-5 rounded-lg transition-all flex items-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-50 cursor-pointer"
+                >
+                  {rescheduleLoading ? (
+                    <>
+                      <svg className="animate-spin w-3.5 h-3.5 text-slate-900" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Rescheduling...
+                    </>
+                  ) : (
+                    'Auto-Resolve: Shift +30 Mins'
+                  )}
+                </button>
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

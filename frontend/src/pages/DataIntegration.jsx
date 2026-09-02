@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import api from '../api/axios';
+import { useRailOps } from '../context/RailOpsContext';
 import DataSourceBadge from '../components/DataSourceBadge';
 
 const PIPELINE_SOURCES = [
@@ -11,28 +12,41 @@ const PIPELINE_SOURCES = [
 ];
 
 export default function DataIntegration() {
+  const { defects, blocks, refreshData } = useRailOps();
   const [metrics, setMetrics] = useState(null);
-  const [defects, setDefects] = useState([]);
   const [initialLoading, setInitialLoading] = useState(true);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [isPolling, setIsPolling] = useState(false);
   const intervalRef = useRef(null);
 
-  // Fetch metrics and recent defects
+  // Live dynamic counts derived from Context datasets
+  const pipelineCounts = useMemo(() => {
+    const tms = defects.filter(d => d.source === 'TMS' || d.department === 'Track').length;
+    const smms = defects.filter(d => d.source === 'SMMS' || d.department === 'Signalling').length;
+    const trk = defects.filter(d => d.source === 'TDMS' || d.department === 'Track' || (d.assetId && d.assetId.startsWith('TRK'))).length;
+    const ohe = defects.filter(d => ['Traction', 'Electrical', 'Infrastructure'].includes(d.department)).length;
+    const coa = blocks.length + defects.filter(d => d.source === 'COA').length;
+    return {
+      TMS: { count: tms || 35 },
+      SMMS: { count: smms || 35 },
+      TRK: { count: trk || 40 },
+      OHE: { count: ohe || 45 },
+      COA: { count: coa || 31 },
+    };
+  }, [defects, blocks]);
+
+  const totalDynamicRecords = useMemo(() => {
+    return Object.values(pipelineCounts).reduce((a, b) => a + (b.count || 0), 0);
+  }, [pipelineCounts]);
+
+  // Fetch metrics (simulated latencies, error rates)
   const fetchMetrics = async (isBackground = false) => {
     if (isBackground) setIsPolling(true);
     try {
-      const [metricsRes, defectsRes] = await Promise.all([
-        api.get('/integration/metrics'),
-        api.get('/defects')
-      ]);
-
+      const metricsRes = await api.get('/integration/metrics');
       if (metricsRes.data) {
         setMetrics(metricsRes.data);
         setLastSyncTime(new Date());
-      }
-      if (defectsRes.data) {
-        setDefects(defectsRes.data);
       }
     } catch (err) {
       console.error('Failed to fetch integration metrics:', err);
@@ -45,10 +59,9 @@ export default function DataIntegration() {
   };
 
   useEffect(() => {
-    // 1. Initial fetch on mount
     fetchMetrics(false);
 
-    // 2. Set up polling interval every 5000ms
+    // 5000ms live polling interval for socket/latency metrics
     intervalRef.current = setInterval(() => {
       fetchMetrics(true);
     }, 5000);
@@ -58,23 +71,28 @@ export default function DataIntegration() {
     };
   }, []);
 
-  // Compute pipeline counts from metrics or fallback
-  const pipelineCounts = metrics?.pipelines || {};
-  const unifiedStorage = metrics?.unifiedStorage || {
-    totalRecords: defects.length || 186,
-    volumeMb: '0.33 MB'
+  const unifiedStorage = {
+    totalRecords: totalDynamicRecords,
+    volumeMb: ((totalDynamicRecords * 1.8) / 1024).toFixed(2) + ' MB'
   };
 
-  const sourcesList = metrics?.sources || PIPELINE_SOURCES.map(s => ({
-    id: s.id,
-    name: s.name,
-    desc: s.desc,
-    records: s.defaultCount,
-    latency: 16,
-    errorRate: '0.0%',
-    isOnline: true,
-    status: 'ONLINE'
-  }));
+  const sourcesList = useMemo(() => {
+    const baseSources = metrics?.sources || PIPELINE_SOURCES.map(s => ({
+      id: s.id,
+      name: s.name,
+      desc: s.desc,
+      records: pipelineCounts[s.id]?.count ?? s.defaultCount,
+      latency: 16,
+      errorRate: '0.0%',
+      isOnline: true,
+      status: 'ONLINE'
+    }));
+
+    return baseSources.map(s => ({
+      ...s,
+      records: pipelineCounts[s.id]?.count ?? s.records
+    }));
+  }, [metrics, pipelineCounts]);
 
   // Latency color utility
   const getLatencyColor = (latency) => {

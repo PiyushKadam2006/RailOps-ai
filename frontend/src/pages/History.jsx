@@ -1,10 +1,9 @@
-import { useState, useEffect } from 'react';
-import api from '../api/axios';
+import { useState } from 'react';
+import { useRailOps } from '../context/RailOpsContext';
 import KPICard from '../components/KPICard';
 
 export default function History() {
-  const [blocks, setBlocks] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { blocks, isLoading: loading, refreshData } = useRailOps();
 
   // Filters
   const [filterCorridor, setFilterCorridor] = useState('ALL');
@@ -14,10 +13,6 @@ export default function History() {
   // Pagination
   const [page, setPage] = useState(1);
   const perPage = 20;
-
-  useEffect(() => {
-    api.get('/blocks').then(res => setBlocks(res.data)).catch(console.error).finally(() => setLoading(false));
-  }, []);
 
   const filteredBlocks = blocks.filter(b => {
     if (filterCorridor !== 'ALL' && b.corridorId !== filterCorridor) return false;

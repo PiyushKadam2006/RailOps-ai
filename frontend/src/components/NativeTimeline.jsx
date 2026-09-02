@@ -1,16 +1,29 @@
 import { useState } from 'react';
 
-export default function NativeTimeline({ blocks }) {
-  const [selectedDate, setSelectedDate] = useState('today');
+export default function NativeTimeline({ 
+  blocks = [], 
+  onBlockClick, 
+  setActiveConflict, 
+  targetDate: propTargetDate, 
+  selectedDayOffset = 0 
+}) {
+  const [internalDate, setInternalDate] = useState('today');
 
   const now = new Date();
-  const filterDate = new Date(now);
-  if (selectedDate === 'tomorrow') filterDate.setDate(now.getDate() + 1);
+  const filterDate = propTargetDate 
+    ? new Date(propTargetDate) 
+    : (() => {
+        const d = new Date(now);
+        if (internalDate === 'tomorrow') d.setDate(now.getDate() + 1);
+        return d;
+      })();
+
   filterDate.setHours(0, 0, 0, 0);
   const filterDateEnd = new Date(filterDate);
   filterDateEnd.setHours(23, 59, 59, 999);
 
   const dayBlocks = blocks.filter(b => {
+    if (!b.startTime) return false;
     const s = new Date(b.startTime);
     const e = new Date(b.endTime);
     return s <= filterDateEnd && e >= filterDate;
@@ -30,18 +43,22 @@ export default function NativeTimeline({ blocks }) {
 
   function getBlockPosition(block) {
     const dayStart = new Date(filterDate);
+    dayStart.setHours(0, 0, 0, 0);
     const s = new Date(block.startTime);
     const e = new Date(block.endTime);
 
     const clampedStart = s < dayStart ? dayStart : s;
-    const dayEnd = new Date(filterDate); dayEnd.setHours(24,0,0,0);
+    const dayEnd = new Date(dayStart); dayEnd.setHours(24, 0, 0, 0);
     const clampedEnd = e > dayEnd ? dayEnd : e;
 
     const startMinutes = (clampedStart - dayStart) / 60000;
     const durationMinutes = (clampedEnd - clampedStart) / 60000;
 
-    const leftPct  = (startMinutes / (24 * 60)) * 100;
-    const widthPct = (durationMinutes / (24 * 60)) * 100;
+    const startHour = startMinutes / 60;
+    const durationHours = durationMinutes / 60;
+
+    const leftPct  = (startHour / 24) * 100;
+    const widthPct = (durationHours / 24) * 100;
 
     return {
       left:  Math.max(0, Math.min(100, leftPct)),
@@ -50,16 +67,24 @@ export default function NativeTimeline({ blocks }) {
   }
 
   function getBlockColor(block) {
+    const isYesterday = selectedDayOffset === -1;
+    const isCompletedOrExecuted = ['COMPLETED', 'EXECUTED'].includes(block.status?.toUpperCase());
+
+    if (isYesterday || isCompletedOrExecuted) {
+      return 'bg-slate-600/70 border-slate-500 text-slate-300';
+    }
+
     const colors = {
       active:      'bg-emerald-500/70 border-emerald-400/50',
       approved:    'bg-cyan-500/70    border-cyan-400/50',
       proposed:    'bg-blue-500/70    border-blue-400/50',
-      completed:   'bg-slate-500/60   border-slate-400/40',
+      completed:   'bg-slate-600/70   border-slate-500/40',
+      executed:    'bg-slate-600/70   border-slate-500/40',
       cancelled:   'bg-red-800/60     border-red-700/40',
       maintenance: 'bg-violet-500/70  border-violet-400/50',
       inspection:  'bg-amber-500/70   border-amber-400/50',
     };
-    return colors[block.status] || 'bg-slate-500/60 border-slate-400/40';
+    return colors[block.status?.toLowerCase()] || 'bg-slate-500/60 border-slate-400/40';
   }
 
   function getDeptAccent(dept) {
@@ -89,27 +114,21 @@ export default function NativeTimeline({ blocks }) {
 
   return (
     <div className="flex flex-col h-full select-none">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-slate-700 flex-shrink-0">
-        <div className="flex items-center gap-1 bg-slate-900 rounded-lg p-0.5 border border-slate-700">
-          {['today','tomorrow'].map(d => (
-            <button
-              key={d}
-              onClick={() => setSelectedDate(d)}
-              className={`font-mono-rail text-[10px] px-3 py-1 rounded-md transition-all ${
-                selectedDate === d
-                  ? 'bg-slate-700 text-emerald-400 font-bold'
-                  : 'text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              {d === 'today' ? '● TODAY' : '○ TOMORROW'}
-            </button>
-          ))}
+      <div className="flex items-center justify-between px-4 py-2 border-b border-slate-700/70 bg-slate-900/30 flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <span className={`w-2 h-2 rounded-full ${
+            selectedDayOffset === -1 
+              ? 'bg-slate-500' 
+              : selectedDayOffset === 0 
+                ? 'bg-emerald-400 animate-pulse' 
+                : 'bg-blue-400'
+          }`} />
+          <span className="font-mono-rail text-[10px] text-slate-300 font-semibold uppercase tracking-wider">
+            {selectedDayOffset === -1 ? 'AUDIT MODE (HISTORICAL)' : selectedDayOffset === 0 ? 'ACTIVE LIVE SCHEDULE' : 'PROJECTED SCHEDULE'}
+          </span>
         </div>
-        <span className="font-mono-rail text-[10px] text-slate-500">
-          {filterDate.toLocaleDateString('en-GB', { weekday:'short', day:'2-digit', month:'short', year:'numeric' })}
-        </span>
-        <span className="font-mono-rail text-[9px] text-slate-500">
-          {dayBlocks.length} blocks scheduled
+        <span className="font-mono-rail text-[9px] text-slate-400">
+          {dayBlocks.length} {dayBlocks.length === 1 ? 'block' : 'blocks'} {selectedDayOffset === -1 ? 'recorded' : 'scheduled'}
         </span>
       </div>
 
@@ -173,7 +192,7 @@ export default function NativeTimeline({ blocks }) {
                     className="absolute top-0 bottom-0 border-l border-slate-600/50"
                     style={{ left: '50%' }}
                   />
-                  {selectedDate === 'today' && (() => {
+                  {selectedDayOffset === 0 && (() => {
                     const nowPct = ((now.getHours() * 60 + now.getMinutes()) / (24*60)) * 100;
                     return (
                       <div
@@ -205,15 +224,19 @@ export default function NativeTimeline({ blocks }) {
                     return (
                       <div
                         key={block._id || idx}
+                        onClick={() => {
+                          const handler = onBlockClick || setActiveConflict;
+                          if (handler) handler(block);
+                        }}
                         className={`absolute top-1 bottom-1 rounded border ${colorClass} border-l-2 ${deptAccent} 
                                     flex items-center overflow-hidden cursor-pointer
-                                    hover:brightness-125 hover:z-30 transition-all group`}
+                                    hover:brightness-125 hover:ring-1 hover:ring-emerald-400 hover:z-30 transition-all group`}
                         style={{
                           left:  `${left}%`,
                           width: `${width}%`,
                           zIndex: 10 + idx,
                         }}
-                        title={`${block.assetId} | ${block.department} | ${block.status}\n${timeLabel}\nCorridor: ${block.corridorId}`}
+                        title={`Click to resolve conflict: ${block.assetId} | ${block.department} | ${block.status}\n${timeLabel}\nCorridor: ${block.corridorId}`}
                       >
                         <div className="absolute bottom-full left-0 mb-1 z-50 hidden group-hover:flex 
                                         flex-col bg-slate-900 border border-slate-600 rounded-lg p-2 
