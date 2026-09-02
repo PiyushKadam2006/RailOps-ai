@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+@layer base {
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background-color: #0f172a;
+    color: #cbd5e1;
+    overflow: hidden;
+  }
+
+  .font-mono-rail {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+  .kpi-accent-em::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:#10b981; border-radius:8px 8px 0 0; }
+  .kpi-accent-rd::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:#ef4444; border-radius:8px 8px 0 0; }
+  .kpi-accent-am::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:#f59e0b; border-radius:8px 8px 0 0; }
+  .kpi-accent-bl::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:#3b82f6; border-radius:8px 8px 0 0; }
+  .kpi-accent-vi::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:#7c3aed; border-radius:8px 8px 0 0; }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+  .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+  @keyframes slide-in {
+    from { transform: translateY(20px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+  }
+  .slide-in { animation: slide-in 0.25s ease-out forwards; }
+
+  @keyframes bar-grow {
+    from { width: 0%; }
+  }
+  .bar-grow { animation: bar-grow 0.6s ease-out forwards; }
+
+  .tl-block-active       { background: #059669; }
+  .tl-block-maintenance  { background: #7c3aed; }
+  .tl-block-inspection   { background: #d97706; }
+  .tl-block-idle         { background: #475569; }
+  .tl-block-proposed     { background: #1d4ed8; }
+  .tl-block-approved     { background: #0891b2; }
+  .tl-block-completed    { background: #374151; }
+  .tl-block-cancelled    { background: #7f1d1d; }
+}
