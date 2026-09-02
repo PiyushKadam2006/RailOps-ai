@@ -7,6 +7,7 @@ export function RailOpsProvider({ children }) {
   const [defects, setDefects] = useState([]);
   const [blocks, setBlocks] = useState([]);
   const [conflicts, setConflicts] = useState([]);
+  const [schedules, setSchedules] = useState([]);
   const [pipelineStats, setPipelineStats] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activityFeed, setActivityFeed] = useState([]);
@@ -14,17 +15,19 @@ export function RailOpsProvider({ children }) {
   // Fetch all core datasets
   const refreshData = useCallback(async () => {
     try {
-      const [defRes, blockRes, confRes, metricsRes] = await Promise.all([
+      const [defRes, blockRes, confRes, metricsRes, schedRes] = await Promise.all([
         api.get('/defects'),
         api.get('/blocks'),
         api.get('/optimization/conflicts'),
-        api.get('/integration/metrics').catch(() => ({ data: null }))
+        api.get('/integration/metrics').catch(() => ({ data: null })),
+        api.get('/schedules').catch(() => ({ data: [] }))
       ]);
 
       if (defRes.data) setDefects(defRes.data);
       if (blockRes.data) setBlocks(blockRes.data);
       if (confRes.data) setConflicts(confRes.data);
       if (metricsRes.data) setPipelineStats(metricsRes.data);
+      if (schedRes.data) setSchedules(schedRes.data);
     } catch (err) {
       console.error('RailOpsContext: Error refreshing data:', err);
     } finally {
@@ -128,6 +131,7 @@ export function RailOpsProvider({ children }) {
     defects,
     blocks,
     conflicts,
+    schedules,
     pipelineStats,
     isLoading,
     activityFeed,

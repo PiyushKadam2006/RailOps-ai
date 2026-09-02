@@ -18,6 +18,9 @@ const { calculatePlanMetrics } = require('../engine/availabilityCalculator');
 function detectConflictMatrix(blocks) {
   const conflicts = [];
   const seen = new Set();
+  const now = new Date();
+  const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+  const todayEnd = new Date(now); todayEnd.setHours(23, 59, 59, 999);
 
   for (let i = 0; i < blocks.length; i++) {
     for (let j = i + 1; j < blocks.length; j++) {
@@ -53,10 +56,30 @@ function detectConflictMatrix(blocks) {
       if (seen.has(pairKey)) continue;
       seen.add(pairKey);
 
+      // Operational Conflict Classification
+      const aStatus = (a.status || 'PROPOSED').toUpperCase();
+      const bStatus = (b.status || 'PROPOSED').toUpperCase();
+      const isPast = overlapEnd < now || aStatus === 'COMPLETED' || bStatus === 'COMPLETED';
+      const isToday = (overlapStart >= todayStart && overlapStart <= todayEnd) || (overlapEnd >= todayStart && overlapEnd <= todayEnd);
+      const isLiveActive = (aStatus === 'ACTIVE' || bStatus === 'ACTIVE') && (overlapStart <= now && overlapEnd >= now);
+
+      let conflictCategory = 'FUTURE_AT_RISK';
+      if (isPast) {
+        conflictCategory = 'HISTORICAL';
+      } else if (isLiveActive) {
+        conflictCategory = 'ACTIVE';
+      } else if (isToday && (aStatus === 'ACTIVE' || aStatus === 'APPROVED' || bStatus === 'ACTIVE' || bStatus === 'APPROVED')) {
+        conflictCategory = 'ACTIVE_TODAY';
+      } else {
+        conflictCategory = 'FUTURE_AT_RISK';
+      }
+
       conflicts.push({
         conflictId: `CONF-${String(conflicts.length + 1).padStart(3,'0')}`,
         type: conflictType,
         severity,
+        category: conflictCategory,
+        isOperationalActive: conflictCategory === 'ACTIVE' || conflictCategory === 'ACTIVE_TODAY',
         blockA: {
           id:         a.blockCode ?? a._id,
           assetId:    a.assetId,
@@ -78,6 +101,11 @@ function detectConflictMatrix(blocks) {
         overlapMinutes:   overlapMins,
         overlapStartTime: overlapStart.toISOString(),
         overlapEndTime:   overlapEnd.toISOString(),
+        description: sameAsset
+          ? `Concurrent block on same asset (${a.assetId}): ${a.department} overlaps with ${b.department}`
+          : deptConflict
+          ? `${a.department} and ${b.department} overlap on ${a.corridorId} (${overlapMins} mins)`
+          : `Corridor ${a.corridorId} simultaneous possession (${overlapMins} mins)`,
         recommendation:   sameAsset
           ? `Reschedule ${b.blockCode ?? b._id} — same asset cannot have concurrent blocks`
           : deptConflict
@@ -88,6 +116,9 @@ function detectConflictMatrix(blocks) {
   }
 
   conflicts.sort((a, b) => {
+    const catOrder = { ACTIVE: 0, ACTIVE_TODAY: 1, FUTURE_AT_RISK: 2, HISTORICAL: 3 };
+    if (catOrder[a.category] !== catOrder[b.category])
+      return catOrder[a.category] - catOrder[b.category];
     const sevOrder = { HIGH: 0, MEDIUM: 1, LOW: 2 };
     if (sevOrder[a.severity] !== sevOrder[b.severity])
       return sevOrder[a.severity] - sevOrder[b.severity];
@@ -279,9 +310,14 @@ exports.approvePlan = async (req, res) => {
 
 exports.getConflicts = async (req, res) => {
   try {
-    const blocks = await Block.find({
+    const { corridorId } = req.query;
+    const filter = {
       status: { $in: ['PROPOSED', 'APPROVED', 'ACTIVE'] }
-    }).lean();
+    };
+    if (corridorId && corridorId !== 'ALL') {
+      filter.corridorId = corridorId;
+    }
+    const blocks = await Block.find(filter).lean();
     const conflictMatrix = detectConflictMatrix(blocks);
     res.status(200).json(conflictMatrix);
   } catch (err) {
