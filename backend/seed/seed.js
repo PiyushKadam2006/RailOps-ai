@@ -4,6 +4,11 @@ const Defect = require('../models/Defect');
 const Block = require('../models/Block');
 const Corridor = require('../models/Corridor');
 const TrainSchedule = require('../models/TrainSchedule');
+const FreightForecast = require('../models/FreightForecast');
+const BlockWindow = require('../models/BlockWindow');
+const timetableData = require('../data/timetableData');
+const freightForecastData = require('../data/freightForecastData');
+const blockWindowsData = require('../data/blockWindowsData');
 
 const ASSETS = [
   'LOCO-001', 'LOCO-002', 'LOCO-003', 'LOCO-004', 'LOCO-005', 'LOCO-006', 'LOCO-007', 'LOCO-008',
@@ -60,24 +65,131 @@ const getWeekStart = () => {
   return weekStart;
 };
 
-const seedDatabase = async () => {
-  const existingDefects = await Defect.countDocuments();
-  if (existingDefects > 0) return;
+const GOLDEN_DEMO_DEFECTS = [
+  {
+    defectCode: 'DEF-0101',
+    assetId: 'TRK-COR1-142',
+    department: 'Track',
+    source: 'TMS',
+    corridorId: 'COR-01',
+    estimatedDurationHrs: 4,
+    priority: 'CRITICAL',
+    priorityScore: 95,
+    status: 'PENDING',
+    faultDescription: 'Ultrasonic flaw detected on high-speed rail section at KP 142.5. Requires emergency rail replacement and precision grinding.'
+  },
+  {
+    defectCode: 'DEF-0102',
+    assetId: 'SIG-COR1-142',
+    department: 'Signalling',
+    source: 'SMMS',
+    corridorId: 'COR-01',
+    estimatedDurationHrs: 2,
+    priority: 'HIGH',
+    priorityScore: 88,
+    status: 'PENDING',
+    faultDescription: 'Point machine electronic interlocking relay calibration and detection rod overhaul at Junction 142.'
+  },
+  {
+    defectCode: 'DEF-0103',
+    assetId: 'OHE-COR1-142',
+    department: 'Traction',
+    source: 'TDMS',
+    corridorId: 'COR-01',
+    estimatedDurationHrs: 2,
+    priority: 'HIGH',
+    priorityScore: 86,
+    status: 'PENDING',
+    faultDescription: 'OHE contact wire dropper replacement, neutral section inspection, and tension realignment at KM 142.8.'
+  }
+];
 
+function generateTrainSchedules(todayDate) {
+  const schedules = [];
+  const days = [-1, 0, 1, 2]; // yesterday, today, tomorrow, day after
+  days.forEach(dayOffset => {
+    const d = new Date(todayDate);
+    d.setDate(d.getDate() + dayOffset);
+    d.setHours(0, 0, 0, 0);
+
+    timetableData.forEach(t => {
+      const dep = new Date(d);
+      dep.setHours(t.startHour, t.startMin, 0, 0);
+      const arr = new Date(d);
+      arr.setHours(t.endHour, t.endMin, 0, 0);
+      if (arr < dep) {
+        arr.setDate(arr.getDate() + 1);
+      }
+
+      schedules.push({
+        trainNumber: t.trainNumber,
+        trainType: t.trainType,
+        corridorId: t.corridorId,
+        departureTime: dep,
+        arrivalTime: arr,
+        priority: t.priority,
+        isAffected: false
+      });
+    });
+  });
+  return schedules;
+}
+
+const seedDatabase = async (force = false) => {
+  const existingDefects = await Defect.countDocuments();
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+
+  if (existingDefects > 0 && !force) {
+    // Ensure Golden Demo defects exist and are in PENDING state
+    for (const gd of GOLDEN_DEMO_DEFECTS) {
+      await Defect.findOneAndUpdate(
+        { defectCode: gd.defectCode },
+        { ...gd, createdAt: new Date() },
+        { upsert: true, new: true }
+      );
+    }
+
+    // Ensure FreightForecast and BlockWindow exist
+    const ffCount = await FreightForecast.countDocuments();
+    if (ffCount === 0) {
+      await FreightForecast.insertMany(freightForecastData);
+    }
+
+    const bwCount = await BlockWindow.countDocuments();
+    if (bwCount === 0) {
+      await BlockWindow.insertMany(blockWindowsData);
+    }
+
+    // Ensure TrainSchedule has timetable records
+    const tsCount = await TrainSchedule.countDocuments();
+    if (tsCount < 20) {
+      await TrainSchedule.insertMany(generateTrainSchedules(today));
+    }
+
+    console.log('Verified and ensured Golden Demo defects and synthetic datasets in existing DB.');
+    return;
+  }
+
+  console.log('Clearing and seeding database...');
   await Corridor.deleteMany({});
   await Defect.deleteMany({});
   await Block.deleteMany({});
   await TrainSchedule.deleteMany({});
+  await FreightForecast.deleteMany({});
+  await BlockWindow.deleteMany({});
 
   await Corridor.insertMany(CORRIDORS_DATA);
-  const corridorIds = CORRIDORS_DATA.map(c => c.corridorId);
+  await FreightForecast.insertMany(freightForecastData);
+  await BlockWindow.insertMany(blockWindowsData);
+  await TrainSchedule.insertMany(generateTrainSchedules(today));
 
+  const corridorIds = CORRIDORS_DATA.map(c => c.corridorId);
   const weekStart = getWeekStart();
   const weekStartMs = weekStart.getTime();
 
-  // Seed 100 Defects
-  const defectsData = [];
-  for (let i = 0; i < 100; i++) {
+  // Seed 100 Defects including Golden Demo defects
+  const defectsData = [...GOLDEN_DEMO_DEFECTS];
+  for (let i = 0; i < 97; i++) {
     const pRand = Math.random();
     let priority, pScore;
     if (pRand < 0.15) { priority = 'CRITICAL'; pScore = faker.number.int({ min: 85, max: 100 }); }
@@ -100,7 +212,7 @@ const seedDatabase = async () => {
     createdAt.setHours(randomHour, randomMin, 0, 0);
     
     defectsData.push({
-      defectCode: 'DEF-' + String(i + 1).padStart(4, '0'),
+      defectCode: 'DEF-' + String(i + 4).padStart(4, '0'),
       assetId: faker.helpers.arrayElement(ASSETS),
       department: faker.helpers.arrayElement(DEPTS),
       source: faker.helpers.arrayElement(SOURCES),
@@ -113,7 +225,9 @@ const seedDatabase = async () => {
       createdAt
     });
   }
-  const defects = await Defect.insertMany(defectsData);
+  await Defect.insertMany(defectsData);
+
+  const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
 
   // Seed 100 Blocks
   const blocksData = [];
@@ -139,10 +253,24 @@ const seedDatabase = async () => {
     const hasConflict = Math.random() < 0.20;
     const conflictFlags = hasConflict ? [faker.helpers.arrayElement(['TRAIN_OVERLAP', 'DEPT_CONFLICT'])] : [];
 
+    let corridorId = faker.helpers.arrayElement(corridorIds);
+    // Keep COR-01 night slot (01:00-09:00) on today and tomorrow clear for golden demo scheduling & what-if re-optimization
+    const t0NightStart = new Date(today); t0NightStart.setHours(1, 0, 0, 0);
+    const t0NightEnd = new Date(today); t0NightEnd.setHours(9, 0, 0, 0);
+    const t1NightStart = new Date(tomorrow); t1NightStart.setHours(1, 0, 0, 0);
+    const t1NightEnd = new Date(tomorrow); t1NightEnd.setHours(9, 0, 0, 0);
+
+    const overlapsNightWindow = (startTime < t0NightEnd && endTime > t0NightStart) ||
+                                (startTime < t1NightEnd && endTime > t1NightStart);
+
+    if (corridorId === 'COR-01' && overlapsNightWindow) {
+      corridorId = 'COR-02';
+    }
+
     blocksData.push({
       blockCode: 'BLK-' + String(i + 1).padStart(4, '0'),
       assetId: faker.helpers.arrayElement(ASSETS),
-      corridorId: faker.helpers.arrayElement(corridorIds),
+      corridorId,
       department: faker.helpers.arrayElement(DEPTS),
       startTime,
       endTime,
@@ -151,11 +279,9 @@ const seedDatabase = async () => {
       conflictFlags
     });
   }
-  const today = new Date(); today.setHours(0,0,0,0);
-  const tomorrow = new Date(today); tomorrow.setDate(today.getDate()+1);
 
   const CORRIDORS_IDS = ['COR-01','COR-02','COR-03','COR-04','COR-05'];
-  const BLOCK_STATUSES = ['active','maintenance','inspection','approved','proposed','completed'];
+  const BLOCK_STATUSES = ['ACTIVE', 'APPROVED', 'PROPOSED', 'COMPLETED'];
 
   const todayBlocks = [];
   for (let i = 0; i < 25; i++) {
@@ -166,11 +292,17 @@ const seedDatabase = async () => {
     const endTime = new Date(startTime);
     endTime.setHours(startTime.getHours() + durationHrs);
 
+    let corridorId = CORRIDORS_IDS[i % 5];
+    // Keep COR-01 01:00-09:00 clear for golden demo window
+    if (corridorId === 'COR-01' && startHour >= 1 && startHour <= 9) {
+      corridorId = 'COR-02';
+    }
+
     const hasConflict = Math.random() < 0.3;
     todayBlocks.push({
       blockCode: 'BLK-T-' + String(i+1).padStart(3,'0'),
       assetId: faker.helpers.arrayElement(ASSETS),
-      corridorId: CORRIDORS_IDS[i % 5],
+      corridorId,
       department: faker.helpers.arrayElement(DEPTS),
       startTime,
       endTime,
@@ -190,10 +322,17 @@ const seedDatabase = async () => {
     const endTime = new Date(startTime);
     endTime.setHours(startTime.getHours() + durationHrs);
 
+    let corridorId = CORRIDORS_IDS[i % 5];
+    const tmrNightStart = new Date(tomorrow); tmrNightStart.setHours(1, 0, 0, 0);
+    const tmrNightEnd = new Date(tomorrow); tmrNightEnd.setHours(9, 0, 0, 0);
+    if (corridorId === 'COR-01' && startTime < tmrNightEnd && endTime > tmrNightStart) {
+      corridorId = 'COR-02';
+    }
+
     tomorrowBlocks.push({
       blockCode: 'BLK-TM-' + String(i+1).padStart(3,'0'),
       assetId: faker.helpers.arrayElement(ASSETS),
-      corridorId: CORRIDORS_IDS[i % 5],
+      corridorId,
       department: faker.helpers.arrayElement(DEPTS),
       startTime,
       endTime,
@@ -211,7 +350,7 @@ const seedDatabase = async () => {
     department: 'Traction',
     startTime: (() => { const d=new Date(today); d.setHours(9,0,0,0); return d })(),
     endTime:   (() => { const d=new Date(today); d.setHours(15,0,0,0); return d })(),
-    status: 'active',
+    status: 'ACTIVE',
     trainImpact: 2,
     conflictFlags: ['DEPT_CONFLICT'],
     linkedDefectId: null
@@ -223,44 +362,25 @@ const seedDatabase = async () => {
     department: 'Signalling',
     startTime: (() => { const d=new Date(today); d.setHours(11,0,0,0); return d })(),
     endTime:   (() => { const d=new Date(today); d.setHours(17,0,0,0); return d })(),
-    status: 'approved',
+    status: 'APPROVED',
     trainImpact: 3,
     conflictFlags: ['TRAIN_OVERLAP','DEPT_CONFLICT'],
     linkedDefectId: null
   };
 
   await Block.insertMany([...blocksData, ...todayBlocks, ...tomorrowBlocks, overlapA, overlapB]);
-
-  // Seed 50 Train Schedules
-  const trainsData = [];
-  for (let i = 0; i < 50; i++) {
-    const departureTime = new Date(weekStartMs + faker.number.int({ min: 0, max: 7 * 24 * 3600000 }));
-    const arrivalTime = new Date(departureTime.getTime() + faker.number.int({ min: 2, max: 24 }) * 3600000);
-
-    const tRand = Math.random();
-    let trainType, priority;
-    if (tRand < 0.30) { trainType = 'Express'; priority = 1; }
-    else if (tRand < 0.55) { trainType = 'Passenger'; priority = 2; }
-    else if (tRand < 0.80) { trainType = 'Goods'; priority = 3; }
-    else { trainType = 'Mail'; priority = 4; }
-
-    trainsData.push({
-      trainNumber: 'TRN-' + String(i + 1).padStart(3, '0'),
-      trainType,
-      corridorId: faker.helpers.arrayElement(corridorIds),
-      departureTime,
-      arrivalTime,
-      priority
-    });
-  }
-  await TrainSchedule.insertMany(trainsData);
+  console.log('Database seeded successfully with deterministic datasets!');
 };
 
 module.exports = { seedDatabase };
 
 if (require.main === module) {
+  const force = process.argv.includes('--force');
   mongoose.connect('mongodb://127.0.0.1:27017/railops_ai')
-    .then(() => seedDatabase())
+    .then(() => seedDatabase(force))
     .then(() => process.exit(0))
-    .catch(console.error);
+    .catch(err => {
+      console.error(err);
+      process.exit(1);
+    });
 }

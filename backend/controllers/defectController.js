@@ -31,7 +31,41 @@ exports.getPendingCount = async (req, res) => {
 
 exports.createDefect = async (req, res) => {
   try {
-    const data = req.body;
+    const data = { ...req.body };
+
+    // Normalize department and source
+    if (data.department === 'TMS' || data.department?.includes?.('Track')) {
+      data.department = 'Track';
+      data.source = data.source || 'TMS';
+    } else if (data.department === 'SMMS' || data.department?.includes?.('Signal')) {
+      data.department = 'Signalling';
+      data.source = data.source || 'SMMS';
+    } else if (data.department === 'TDMS' || data.department?.includes?.('Traction')) {
+      data.department = 'Traction';
+      data.source = data.source || 'TDMS';
+    } else if (!data.source) {
+      data.source = 'TMS';
+    }
+
+    // Normalize duration
+    if (data.durationHours && !data.estimatedDurationHrs) {
+      data.estimatedDurationHrs = Number(data.durationHours);
+    }
+
+    // Normalize priority if sent as a number (1-10)
+    if (typeof data.priority === 'number') {
+      if (data.priority >= 8) data.priority = 'CRITICAL';
+      else if (data.priority >= 6) data.priority = 'HIGH';
+      else if (data.priority >= 4) data.priority = 'MEDIUM';
+      else data.priority = 'LOW';
+    } else if (!data.priority) {
+      data.priority = 'MEDIUM';
+    }
+
+    if (!data.corridorId) {
+      data.corridorId = 'COR-01';
+    }
+
     const defect = new Defect(data);
     const count = await Defect.countDocuments();
     defect.defectCode = 'DEF-' + String(count + 1).padStart(4, '0');

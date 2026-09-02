@@ -6,9 +6,11 @@ import DataSourceBadge from '../components/DataSourceBadge';
 const PIPELINE_SOURCES = [
   { id: 'TMS', name: 'TMS', desc: 'Track Management', defaultCount: 35 },
   { id: 'SMMS', name: 'SMMS', desc: 'Signal Maintenance', defaultCount: 35 },
-  { id: 'TRK', name: 'TRK', desc: 'Permanent Way Assets', defaultCount: 40 },
-  { id: 'OHE', name: 'OHE', desc: 'Overhead Equipment', defaultCount: 45 },
-  { id: 'COA', name: 'COA', desc: 'Control Office Ops', defaultCount: 31 },
+  { id: 'TDMS', name: 'TDMS', desc: 'Traction Distribution', defaultCount: 32 },
+  { id: 'BDMS', name: 'BDMS', desc: 'Block Disconnection', defaultCount: 28 },
+  { id: 'COA', name: 'COA', desc: 'Control Office Ops', defaultCount: 42 },
+  { id: 'TIMETABLE', name: 'Timetable', desc: 'Train Timetable', defaultCount: 129 },
+  { id: 'FREIGHT', name: 'Freight Forecast', desc: 'Goods Traffic Stream', defaultCount: 18 },
 ];
 
 export default function DataIntegration() {
@@ -19,19 +21,24 @@ export default function DataIntegration() {
   const [isPolling, setIsPolling] = useState(false);
   const intervalRef = useRef(null);
 
-  // Live dynamic counts derived from Context datasets
+  // Dynamic counts derived from Context datasets
   const pipelineCounts = useMemo(() => {
     const tms = defects.filter(d => d.source === 'TMS' || d.department === 'Track').length;
     const smms = defects.filter(d => d.source === 'SMMS' || d.department === 'Signalling').length;
-    const trk = defects.filter(d => d.source === 'TDMS' || d.department === 'Track' || (d.assetId && d.assetId.startsWith('TRK'))).length;
-    const ohe = defects.filter(d => ['Traction', 'Electrical', 'Infrastructure'].includes(d.department)).length;
+    const tdms = defects.filter(d => d.source === 'TDMS' || ['Traction', 'Electrical'].includes(d.department)).length;
+    const bdms = blocks.filter(b => ['PROPOSED', 'ACTIVE'].includes(b.status)).length;
     const coa = blocks.length + defects.filter(d => d.source === 'COA').length;
+    const timetable = 129;
+    const freight = 18;
+
     return {
       TMS: { count: tms || 35 },
       SMMS: { count: smms || 35 },
-      TRK: { count: trk || 40 },
-      OHE: { count: ohe || 45 },
-      COA: { count: coa || 31 },
+      TDMS: { count: tdms || 32 },
+      BDMS: { count: bdms || 28 },
+      COA: { count: coa || 42 },
+      TIMETABLE: { count: timetable },
+      FREIGHT: { count: freight }
     };
   }, [defects, blocks]);
 
@@ -39,7 +46,6 @@ export default function DataIntegration() {
     return Object.values(pipelineCounts).reduce((a, b) => a + (b.count || 0), 0);
   }, [pipelineCounts]);
 
-  // Fetch metrics (simulated latencies, error rates)
   const fetchMetrics = async (isBackground = false) => {
     if (isBackground) setIsPolling(true);
     try {
@@ -60,8 +66,6 @@ export default function DataIntegration() {
 
   useEffect(() => {
     fetchMetrics(false);
-
-    // 5000ms live polling interval for socket/latency metrics
     intervalRef.current = setInterval(() => {
       fetchMetrics(true);
     }, 5000);
@@ -73,7 +77,7 @@ export default function DataIntegration() {
 
   const unifiedStorage = {
     totalRecords: totalDynamicRecords,
-    volumeMb: ((totalDynamicRecords * 1.8) / 1024).toFixed(2) + ' MB'
+    volumeMb: ((totalDynamicRecords * 2.1) / 1024).toFixed(2) + ' MB'
   };
 
   const sourcesList = useMemo(() => {
@@ -94,7 +98,6 @@ export default function DataIntegration() {
     }));
   }, [metrics, pipelineCounts]);
 
-  // Latency color utility
   const getLatencyColor = (latency) => {
     if (latency > 100) return 'text-red-400 font-bold';
     if (latency > 50) return 'text-amber-400';
@@ -102,151 +105,77 @@ export default function DataIntegration() {
   };
 
   return (
-    <div className="h-full flex flex-col p-4 gap-4 overflow-hidden bg-slate-950 text-slate-100">
-      
-      {/* ── TOP PIPELINE STREAM OVERVIEW ── */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex-shrink-0 shadow-lg">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
-            <h2 className="font-mono-rail text-xs font-bold text-slate-200 tracking-wider">
-              DYNAMIC DATA INTEGRATION PIPELINE
-            </h2>
-          </div>
-          
-          <div className="flex items-center gap-3 font-mono-rail text-[9px]">
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-800/80 border border-slate-700 text-slate-400">
-              <span className={`w-1.5 h-1.5 rounded-full ${isPolling ? 'bg-amber-400 animate-ping' : 'bg-emerald-400'}`} />
-              <span>{isPolling ? 'STREAM SYNCING...' : 'LIVE 5s POLLING ACTIVE'}</span>
-            </div>
-            {lastSyncTime && (
-              <span className="text-slate-500">
-                Synced at {lastSyncTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-              </span>
-            )}
-          </div>
+    <div className="h-full flex flex-col gap-3 p-4 overflow-hidden bg-slate-950 text-slate-100">
+
+      {/* ── SYNTHETIC DEMONSTRATION DISCLAIMER BANNER ── */}
+      <div className="bg-slate-900 border border-blue-500/30 rounded-xl px-4 py-2.5 flex items-center justify-between shadow-md">
+        <div className="flex items-center gap-2.5">
+          <span className="font-mono-rail text-[9px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40 font-bold">
+            PROTOTYPE DATA ARCHITECTURE
+          </span>
+          <span className="font-mono-rail text-[10px] text-slate-300">
+            Synthetic / simulated data for prototype demonstration — Unified ingestion across Indian Railways TMS, SMMS, TDMS, BDMS, COA, Timetable & Freight streams.
+          </span>
         </div>
-
-        {/* Pipeline Ingestion Flow */}
-        <div className="flex items-center justify-between">
-          
-          {/* 5 Ingestion Source Cards: TMS, SMMS, TRK, OHE, COA */}
-          <div className="flex gap-2">
-            {PIPELINE_SOURCES.map(s => {
-              const count = pipelineCounts[s.id]?.count ?? s.defaultCount;
-              return (
-                <div
-                  key={s.id}
-                  className="bg-slate-800/70 border border-slate-700/80 hover:border-slate-600 rounded-lg p-3 w-32 flex flex-col items-center transition-all group"
-                >
-                  <DataSourceBadge source={s.name} />
-                  <span className="font-mono-rail text-[8px] text-slate-400 mt-2 text-center h-5 leading-tight truncate w-full">
-                    {s.desc}
-                  </span>
-                  {initialLoading && !metrics ? (
-                    <div className="w-12 h-5 bg-slate-700/60 rounded animate-pulse mt-1" />
-                  ) : (
-                    <span className="font-mono-rail text-sm font-bold text-slate-100 mt-1">
-                      {count.toLocaleString()}
-                    </span>
-                  )}
-                  <span className="font-mono-rail text-[8px] text-slate-500 mt-0.5">records</span>
-                </div>
-              );
-            })}
-          </div>
-          
-          {/* Flow Connector Arrow 1 */}
-          <div className="flex-1 flex items-center justify-center relative px-4">
-            <div className="h-px bg-slate-700 w-full absolute" />
-            <div className="text-emerald-400 z-10 bg-slate-900 px-2 font-mono-rail text-xs animate-pulse">
-              ▶▶
-            </div>
-          </div>
-
-          {/* Unified Storage Central Container */}
-          <div className="bg-slate-800/90 border border-emerald-500/40 rounded-xl p-4 w-44 flex flex-col items-center shadow-[0_0_20px_rgba(16,185,129,0.12)]">
-            <div className="w-8 h-8 bg-emerald-500/20 rounded-full flex items-center justify-center mb-1.5 border border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.3)]">
-              <span className="text-emerald-400 text-sm font-bold">✓</span>
-            </div>
-            <span className="font-mono-rail text-[10px] text-emerald-400 font-bold text-center uppercase tracking-wide">
-              Unified Storage
-            </span>
-            {initialLoading && !metrics ? (
-              <div className="w-16 h-6 bg-slate-700/60 rounded animate-pulse mt-1.5" />
-            ) : (
-              <span className="font-mono-rail text-base font-bold text-slate-100 mt-1">
-                {unifiedStorage.totalRecords?.toLocaleString()}
-              </span>
-            )}
-            <div className="flex items-center gap-1.5 mt-0.5 font-mono-rail text-[8px] text-slate-400">
-              <span>total records</span>
-              <span>•</span>
-              <span className="text-emerald-400/90 font-semibold">{unifiedStorage.volumeMb}</span>
-            </div>
-          </div>
-
-          {/* Flow Connector Arrow 2 */}
-          <div className="flex-1 flex items-center justify-center relative px-4">
-            <div className="h-px bg-slate-700 w-full absolute" />
-            <div className="text-blue-400 z-10 bg-slate-900 px-2 font-mono-rail text-xs animate-pulse">
-              ▶▶
-            </div>
-          </div>
-
-          {/* AI Optimization Engine Endpoint */}
-          <div className="bg-slate-800/90 border border-blue-500/40 rounded-xl p-4 w-44 flex flex-col items-center shadow-[0_0_20px_rgba(59,130,246,0.12)]">
-            <div className="w-8 h-8 bg-blue-500/20 rounded-full flex items-center justify-center mb-1.5 border border-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)] pulse-dot">
-              <span className="text-blue-400 text-xs font-mono-rail font-bold">AI</span>
-            </div>
-            <span className="font-mono-rail text-[10px] text-blue-400 font-bold text-center uppercase tracking-wide">
-              AI Engine
-            </span>
-            <span className="font-mono-rail text-[9px] text-slate-300 font-semibold mt-1">
-              Active Optimization
-            </span>
-            <span className="font-mono-rail text-[8px] text-slate-500 mt-0.5">
-              Live heuristic stream
-            </span>
-          </div>
+        <div className="font-mono-rail text-[9px] text-slate-500 flex items-center gap-2">
+          <span>Latency Polling: 5s</span>
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
         </div>
       </div>
 
+      {/* ── TOP PIPELINE STREAM CARDS ── */}
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 flex-shrink-0">
+        {sourcesList.map(src => (
+          <div key={src.id} className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-col justify-between shadow">
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-mono-rail text-[10px] font-bold text-emerald-400">{src.name}</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            </div>
+            <div className="font-mono-rail text-lg font-bold text-slate-100">{src.records}</div>
+            <div className="font-mono-rail text-[8px] text-slate-500 truncate mt-0.5">{src.desc}</div>
+            <div className="mt-2 pt-1 border-t border-slate-800/80 flex items-center justify-between font-mono-rail text-[8px]">
+              <span className="text-slate-500">Latency</span>
+              <span className={getLatencyColor(src.latency)}>{src.latency}ms</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
       {/* ── LOWER SECTION: DEFECT FEED + LIVE SOURCE HEALTH MONITOR ── */}
-      <div className="flex-1 grid grid-cols-[1fr_320px] gap-4 overflow-hidden">
+      <div className="flex-1 grid grid-cols-[1fr_340px] gap-4 overflow-hidden min-h-0">
         
         {/* Left Table: Defect Ingestion Feed */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl flex flex-col overflow-hidden shadow-xl">
           <div className="px-4 py-2.5 border-b border-slate-800 flex items-center justify-between bg-slate-800/50">
             <div className="flex items-center gap-2">
-              <h2 className="font-mono-rail text-xs font-semibold text-slate-300">
-                LIVE DEFECT INGESTION STREAM
+              <h2 className="font-mono-rail text-xs font-bold text-slate-200">
+                UNIFIED MULTI-DEPARTMENT INGESTION STREAM
               </h2>
-              <span className="font-mono-rail text-[9px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">
-                {defects.length} RECORDS INGESTED
+              <span className="font-mono-rail text-[9px] px-2 py-0.5 rounded-full bg-slate-800 text-emerald-400 border border-slate-700">
+                {defects.length} RECORDS ACTIVE
               </span>
             </div>
             <span className="font-mono-rail text-[9px] text-slate-500">
-              Auto-refreshed from MongoDB collections
+              Auto-synchronized with AI Optimization Engine
             </span>
           </div>
 
           <div className="flex-1 overflow-auto p-0">
             <table className="w-full text-left border-collapse">
-              <thead className="bg-slate-900/90 sticky top-0 z-10">
+              <thead className="bg-slate-900/95 sticky top-0 z-10">
                 <tr>
                   <th className="p-3 font-mono-rail text-[9px] uppercase text-slate-400 border-b border-slate-800">ID</th>
                   <th className="p-3 font-mono-rail text-[9px] uppercase text-slate-400 border-b border-slate-800">Source</th>
                   <th className="p-3 font-mono-rail text-[9px] uppercase text-slate-400 border-b border-slate-800">Asset</th>
                   <th className="p-3 font-mono-rail text-[9px] uppercase text-slate-400 border-b border-slate-800">Dept</th>
                   <th className="p-3 font-mono-rail text-[9px] uppercase text-slate-400 border-b border-slate-800">Priority</th>
-                  <th className="p-3 font-mono-rail text-[9px] uppercase text-slate-400 border-b border-slate-800">Ingestion Time</th>
+                  <th className="p-3 font-mono-rail text-[9px] uppercase text-slate-400 border-b border-slate-800">Corridor</th>
                 </tr>
               </thead>
               <tbody>
                 {defects.slice(0, 50).map(d => (
                   <tr key={d._id} className="border-b border-slate-800/60 hover:bg-slate-800/40 transition-colors">
-                    <td className="p-3 font-mono-rail text-[10px] text-slate-300">
+                    <td className="p-3 font-mono-rail text-[10px] text-emerald-400 font-bold">
                       {d.defectCode || d._id.substring(0, 8)}
                     </td>
                     <td className="p-3">
@@ -269,7 +198,7 @@ export default function DataIntegration() {
                       </span>
                     </td>
                     <td className="p-3 font-mono-rail text-[10px] text-slate-500">
-                      {new Date(d.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      {d.corridorId || 'COR-01'}
                     </td>
                   </tr>
                 ))}
@@ -281,16 +210,16 @@ export default function DataIntegration() {
         {/* Right Panel: Live Source Health Monitoring */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl flex flex-col overflow-hidden shadow-xl">
           <div className="px-4 py-2.5 border-b border-slate-800 flex items-center justify-between bg-slate-800/50">
-            <h2 className="font-mono-rail text-xs font-semibold text-slate-300">
-              LIVE SOURCE HEALTH
+            <h2 className="font-mono-rail text-xs font-bold text-slate-200">
+              SOURCE HEALTH MONITOR
             </h2>
             <span className="font-mono-rail text-[9px] text-emerald-400 flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              SOCKET ACTIVE
+              LIVE
             </span>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+          <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5">
             {sourcesList.map(s => {
               const isSpike = parseFloat(s.errorRate) > 0;
               const isHighLatency = s.latency > 100;
@@ -299,76 +228,33 @@ export default function DataIntegration() {
               return (
                 <div
                   key={s.id || s.name}
-                  className="bg-slate-800/50 border border-slate-800 rounded-lg p-3 flex flex-col gap-2 hover:border-slate-700 transition-colors"
+                  className="bg-slate-800/50 border border-slate-800 rounded-lg p-2.5 flex flex-col gap-1.5 hover:border-slate-700 transition-colors"
                 >
                   <div className="flex justify-between items-center">
                     <div className="flex items-center gap-2">
                       <DataSourceBadge source={s.name} />
-                      <span className="font-mono-rail text-[9px] text-slate-400 truncate max-w-[120px]">
+                      <span className="font-mono-rail text-[9px] text-slate-400 truncate max-w-[140px]">
                         {s.desc}
                       </span>
                     </div>
 
                     <div className="flex items-center gap-1.5">
-                      <div
-                        className={`w-2 h-2 rounded-full ${
-                          isHealthy
-                            ? 'bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]'
-                            : 'bg-amber-400 animate-ping shadow-[0_0_8px_rgba(251,191,36,0.8)]'
-                        }`}
-                      />
-                      <span
-                        className={`font-mono-rail text-[8px] font-bold ${
-                          isHealthy ? 'text-emerald-400' : 'text-amber-400'
-                        }`}
-                      >
-                        {isHealthy ? 'ONLINE' : 'DEGRADED'}
-                      </span>
+                      <div className={`w-2 h-2 rounded-full ${isHealthy ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'}`} />
+                      <span className="font-mono-rail text-[8px] text-slate-400">{s.status}</span>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800/80">
-                    <div>
-                      <div className="font-mono-rail text-[8px] text-slate-500">Latency</div>
-                      <div className={`font-mono-rail text-xs font-semibold ${getLatencyColor(s.latency)}`}>
-                        {s.latency} ms
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="font-mono-rail text-[8px] text-slate-500">Error Rate</div>
-                      <div
-                        className={`font-mono-rail text-xs font-semibold ${
-                          isSpike ? 'text-red-400 font-bold' : 'text-emerald-400'
-                        }`}
-                      >
-                        {s.errorRate}
-                      </div>
-                    </div>
+                  <div className="flex items-center justify-between font-mono-rail text-[8px] text-slate-400 pt-1 border-t border-slate-800">
+                    <span>Records: <strong className="text-slate-200">{s.records}</strong></span>
+                    <span>Latency: <strong className={getLatencyColor(s.latency)}>{s.latency}ms</strong></span>
+                    <span>Errors: <strong className={isSpike ? 'text-red-400' : 'text-slate-400'}>{s.errorRate}</strong></span>
                   </div>
                 </div>
               );
             })}
-
-            {/* Ingestion Pipeline Protocol Details */}
-            <div className="mt-auto pt-3 border-t border-slate-800">
-              <div className="font-mono-rail text-[8px] text-slate-500 uppercase mb-1">
-                Ingestion Protocol
-              </div>
-              <div className="font-mono-rail text-[9px] text-slate-400 flex justify-between">
-                <span>Polling Frequency</span>
-                <span className="text-slate-300">5000 ms</span>
-              </div>
-              <div className="font-mono-rail text-[9px] text-slate-400 flex justify-between mt-0.5">
-                <span>Socket Handshake</span>
-                <span className="text-emerald-400 font-semibold">TLS 1.3 / WebSocket</span>
-              </div>
-            </div>
           </div>
         </div>
-
       </div>
-
     </div>
   );
 }

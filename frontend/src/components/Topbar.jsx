@@ -21,6 +21,7 @@ export default function Topbar() {
 
       <nav className="flex items-center gap-1 h-full">
         <NavLink to="/" className={getNavClass}>Dashboard</NavLink>
+        <NavLink to="/requests" className={getNavClass}>Requests</NavLink>
         <NavLink to="/integration" className={getNavClass}>Data Integration</NavLink>
         <NavLink to="/optimization" className={getNavClass}>Optimization</NavLink>
         <NavLink to="/simulation" className={getNavClass}>What-If Sim</NavLink>

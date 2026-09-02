@@ -3,10 +3,16 @@ const { reoptimize } = require('../engine/reoptimizer');
 exports.runWhatIf = async (req, res) => {
   try {
     const { scenario, corridorId, delayMinutes, description } = req.body;
-    const result = await reoptimize({ type: scenario, corridorId, delayMinutes });
-    res.status(200).json({ result, scenario, timestamp: new Date() });
+    const result = await reoptimize({
+      type: scenario || 'EMERGENCY_BLOCK',
+      corridorId: corridorId || 'COR-01',
+      delayMinutes: Number(delayMinutes) || 120,
+      description: description || 'Track disruption requiring re-optimization'
+    });
+    res.status(200).json({ success: true, result, scenario, timestamp: new Date() });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Simulation error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 };
 

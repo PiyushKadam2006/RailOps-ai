@@ -1,61 +1,55 @@
 const Defect = require('../models/Defect');
 const Block = require('../models/Block');
 const TrainSchedule = require('../models/TrainSchedule');
-const Corridor = require('../models/Corridor');
+const FreightForecast = require('../models/FreightForecast');
 
 exports.getMetrics = async (req, res) => {
   try {
-    // 1. Query real MongoDB document counts using Mongoose countDocuments()
+    // 1. Query real MongoDB document counts across all 7 Indian Railways source systems
     const [
       tmsCount,
       smmsCount,
-      trkCount,
-      oheCount,
+      tdmsCount,
+      bdmsCount,
       coaCount,
-      totalDefects,
-      totalBlocks,
-      totalSchedules
+      timetableCount,
+      freightCount
     ] = await Promise.all([
-      // TMS (Track Maintenance System / Defects filtered by Track dept or TMS source)
+      // 1. TMS: Track Management System (Track defects & permanent way)
       Defect.countDocuments({ $or: [{ source: 'TMS' }, { department: 'Track' }] }),
-      // SMMS (Signal Maintenance System / Defects filtered by Signalling dept or SMMS source)
+      // 2. SMMS: Signal Maintenance Management System (Signalling & Interlocking)
       Defect.countDocuments({ $or: [{ source: 'SMMS' }, { department: 'Signalling' }] }),
-      // TRK (Track / Assets collection & Permanent Way defects)
-      Defect.countDocuments({ $or: [{ source: 'TDMS' }, { department: 'Track' }, { assetId: /^TRK/ }] }),
-      // OHE (Overhead Equipment / Traction & Electrical infrastructure)
-      Defect.countDocuments({ department: { $in: ['Traction', 'Electrical', 'Infrastructure'] } }),
-      // COA (Control Office Application / Schedule & Block records)
-      Promise.all([
-        Block.countDocuments(),
-        TrainSchedule.countDocuments(),
-        Defect.countDocuments({ source: 'COA' })
-      ]).then(([blocks, trains, coaDefects]) => blocks + trains + coaDefects),
-      Defect.countDocuments(),
+      // 3. TDMS: Traction Distribution Management System (OHE & 25kV Catenary)
+      Defect.countDocuments({ $or: [{ source: 'TDMS' }, { department: 'Traction' }, { department: 'Electrical' }] }),
+      // 4. BDMS: Block Disconnection Management System (Department Block Requests)
+      Block.countDocuments({ status: { $in: ['PROPOSED', 'ACTIVE'] } }),
+      // 5. COA: Control Office Application (Corridor tracking & line clear)
       Block.countDocuments(),
-      TrainSchedule.countDocuments()
+      // 6. Train Timetable (Passenger & Express Schedules)
+      TrainSchedule.countDocuments(),
+      // 7. Freight Forecast (Goods Movement Predictions)
+      FreightForecast.countDocuments()
     ]);
 
-    // Unified storage total dynamically calculated by summing individual counts
-    const totalRecords = tmsCount + smmsCount + trkCount + oheCount + coaCount;
-    const storageVolumeKb = totalRecords * 1.8;
+    const totalRecords = tmsCount + smmsCount + tdmsCount + bdmsCount + coaCount + timetableCount + freightCount;
+    const storageVolumeKb = totalRecords * 2.1;
     const storageVolumeMb = (storageVolumeKb / 1024).toFixed(2) + ' MB';
 
     // 2. Source health & latency simulation
     const sourceConfigs = [
-      { id: 'TMS', name: 'TMS', desc: 'Track Management', count: tmsCount, baseMin: 10, baseMax: 26 },
-      { id: 'SMMS', name: 'SMMS', desc: 'Signal Maintenance', count: smmsCount, baseMin: 18, baseMax: 42 },
-      { id: 'TRK', name: 'TRK', desc: 'Permanent Way Assets', count: trkCount, baseMin: 8, baseMax: 22 },
-      { id: 'OHE', name: 'OHE', desc: 'Overhead Equipment', count: oheCount, baseMin: 12, baseMax: 35 },
-      { id: 'COA', name: 'COA', desc: 'Control Office Ops', count: coaCount, baseMin: 16, baseMax: 38 }
+      { id: 'TMS', name: 'TMS', desc: 'Track Management System', count: tmsCount, baseMin: 12, baseMax: 28 },
+      { id: 'SMMS', name: 'SMMS', desc: 'Signal Maintenance System', count: smmsCount, baseMin: 15, baseMax: 35 },
+      { id: 'TDMS', name: 'TDMS', desc: 'Traction Distribution System', count: tdmsCount, baseMin: 14, baseMax: 32 },
+      { id: 'BDMS', name: 'BDMS', desc: 'Block Disconnection System', count: bdmsCount, baseMin: 10, baseMax: 24 },
+      { id: 'COA', name: 'COA', desc: 'Control Office Application', count: coaCount, baseMin: 18, baseMax: 42 },
+      { id: 'TIMETABLE', name: 'Train Timetable', desc: 'Passenger & Express Timetable', count: timetableCount, baseMin: 8, baseMax: 20 },
+      { id: 'FREIGHT', name: 'Freight Forecast', desc: 'COA / Goods Traffic Predictions', count: freightCount, baseMin: 12, baseMax: 30 }
     ];
 
     const sources = sourceConfigs.map(cfg => {
-      // Fluctuating latency between 8ms and 45ms (simulating live network socket polling)
       const latency = Math.floor(Math.random() * (cfg.baseMax - cfg.baseMin + 1)) + cfg.baseMin;
-      // Rare random spike condition (< 2% chance) to simulate minor source degradation
       const hasSpike = Math.random() < 0.02;
       const errorRate = hasSpike ? (Math.random() * 1.5 + 0.4).toFixed(1) + '%' : '0.0%';
-      const isOnline = true;
 
       return {
         id: cfg.id,
@@ -64,35 +58,27 @@ exports.getMetrics = async (req, res) => {
         records: cfg.count,
         latency,
         errorRate,
-        isOnline,
-        status: isOnline ? 'ONLINE' : 'DEGRADED',
-        lastHeartbeat: new Date().toISOString()
+        isOnline: true,
+        status: 'ONLINE'
       };
     });
+
+    const averageLatency = Math.round(sources.reduce((acc, s) => acc + s.latency, 0) / sources.length);
+    const overallHealth = 'OPTIMAL';
 
     res.status(200).json({
       success: true,
       timestamp: new Date().toISOString(),
-      unifiedStorage: {
+      summary: {
         totalRecords,
-        volumeMb: storageVolumeMb,
-        databaseBreakdown: {
-          defects: totalDefects,
-          blocks: totalBlocks,
-          schedules: totalSchedules
-        }
-      },
-      pipelines: {
-        TMS: { count: tmsCount, desc: 'Track Management' },
-        SMMS: { count: smmsCount, desc: 'Signal Maintenance' },
-        TRK: { count: trkCount, desc: 'Permanent Way Assets' },
-        OHE: { count: oheCount, desc: 'Overhead Equipment' },
-        COA: { count: coaCount, desc: 'Control Office Ops' }
+        storageVolumeMb,
+        averageLatencyMs: averageLatency,
+        overallHealth
       },
       sources
     });
-  } catch (error) {
-    console.error('Data integration metrics error:', error);
-    res.status(500).json({ success: false, error: error.message });
+  } catch (err) {
+    console.error('Integration metrics error:', err);
+    res.status(500).json({ success: false, error: err.message });
   }
 };

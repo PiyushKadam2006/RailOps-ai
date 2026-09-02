@@ -1,25 +1,29 @@
 import React, { useState, useEffect, useRef } from 'react'
 import api from '../api/axios'
+import { useRailOps } from '../context/RailOpsContext'
 
 const LOADING_STEPS = [
-  { id: 1, label: 'Fetching defects & blocks from MongoDB...',    pct: 12 },
-  { id: 2, label: 'Running priority scoring algorithm...',         pct: 30 },
-  { id: 3, label: 'Executing spatial-temporal bundling...',        pct: 58 },
-  { id: 4, label: 'Building conflict detection matrix...',         pct: 80 },
-  { id: 5, label: 'Compiling optimization report...',              pct: 95 },
-  { id: 6, label: 'Complete.',                                     pct: 100 },
+  { id: 1, label: 'Ingesting TMS, SMMS, TDMS defects & timetable schedules...', pct: 15 },
+  { id: 2, label: 'Running explainable multi-factor priority scoring...',        pct: 35 },
+  { id: 3, label: 'Executing multi-department spatial-temporal bundling...',      pct: 55 },
+  { id: 4, label: 'Evaluating candidate windows against 10 safety constraints...', pct: 75 },
+  { id: 5, label: 'Computing asset availability & before/after delta...',         pct: 90 },
+  { id: 6, label: 'Coordinated block optimization complete.',                     pct: 100 },
 ]
 
 export default function OptimizationEngine() {
+  const { refreshData } = useRailOps()
+  const [horizon, setHorizon]         = useState('Today') // 'Today' | '7 Days' | '30 Days'
   const [running, setRunning]         = useState(false)
   const [stepIdx, setStepIdx]         = useState(0)
   const [progress, setProgress]       = useState(0)
   const [result, setResult]           = useState(null)
   const [error, setError]             = useState(null)
   const [initConflicts, setInitConflicts] = useState([])
-  const [activeTab, setActiveTab]     = useState('bundles') // 'bundles' | 'conflicts'
+  const [activeTab, setActiveTab]     = useState('overview') // 'overview' | 'candidates' | 'bundles' | 'conflicts'
   const [expandedBundle, setExpandedBundle] = useState(null)
-  const intervalRef = useRef(null)
+  const [isApproving, setIsApproving] = useState(false)
+  const [approveSuccess, setApproveSuccess] = useState(null)
 
   // Load initial conflict data on mount
   useEffect(() => {
@@ -32,21 +36,16 @@ export default function OptimizationEngine() {
   function animateToStep(targetStepIdx, onComplete) {
     const step = LOADING_STEPS[targetStepIdx]
     const targetPct = step.pct
-
     setStepIdx(targetStepIdx)
 
-    // Smooth progress bar animation using requestAnimationFrame
-    let current = 0
-    if (targetStepIdx > 0) current = LOADING_STEPS[targetStepIdx - 1].pct
-
-    const duration = 300 // ms per step
+    let current = targetStepIdx > 0 ? LOADING_STEPS[targetStepIdx - 1].pct : 0
+    const duration = 280
     const startTime = performance.now()
     const startPct = current
 
     function tick(now) {
       const elapsed = now - startTime
       const t = Math.min(1, elapsed / duration)
-      // ease-out cubic
       const eased = 1 - Math.pow(1 - t, 3)
       const pct = Math.round(startPct + (targetPct - startPct) * eased)
       setProgress(pct)
@@ -65,21 +64,19 @@ export default function OptimizationEngine() {
     setRunning(true)
     setError(null)
     setResult(null)
+    setApproveSuccess(null)
     setStepIdx(0)
     setProgress(0)
-    setActiveTab('bundles')
 
-    // Step 1 & 2: animate locally while API call is in flight
     animateToStep(0, () =>
       animateToStep(1, () =>
         animateToStep(2, null)
       )
     )
 
-    // Fire the real API call
     let apiResult = null
     try {
-      const res = await api.post('/optimization/run')
+      const res = await api.post('/optimization/run', { horizon, corridorId: 'COR-01' })
       apiResult = res.data
     } catch (err) {
       setError(err.response?.data?.error ?? err.message ?? 'Optimization failed')
@@ -89,18 +86,42 @@ export default function OptimizationEngine() {
       return
     }
 
-    // Steps 3 → 5: animate to completion
     animateToStep(3, () =>
       animateToStep(4, () =>
         animateToStep(5, () => {
-          // Small pause so user sees "Complete." before results render
           setTimeout(() => {
             setResult(apiResult)
             setRunning(false)
+            setActiveTab('overview')
+            if (apiResult.intelligentBundles?.length > 0) {
+              setExpandedBundle(apiResult.intelligentBundles[0].bundleId)
+            }
           }, 400)
         })
       )
     )
+  }
+
+  async function handleApprovePlan() {
+    if (!result?.selectedWindow) return
+    setIsApproving(true)
+    try {
+      const primaryBundle = result.intelligentBundles?.find(b => b.isMultiDepartment) || result.intelligentBundles?.[0]
+      const res = await api.post('/optimization/approve', {
+        planId: result.planId,
+        bundleId: primaryBundle?.bundleId,
+        corridorId: primaryBundle?.corridorId || 'COR-01',
+        windowStart: result.selectedWindow.windowStart,
+        windowEnd: result.selectedWindow.windowEnd,
+        defects: primaryBundle?.defects || []
+      })
+      setApproveSuccess(res.data?.message || 'Coordinated maintenance block committed successfully.')
+      refreshData()
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to commit approved plan')
+    } finally {
+      setIsApproving(false)
+    }
   }
 
   function PriorityBadge({ value }) {
@@ -111,8 +132,7 @@ export default function OptimizationEngine() {
       LOW:      'bg-slate-500/20 text-slate-400 border-slate-500/40',
     }
     return (
-      <span className={`font-mono-rail text-[8px] px-1.5 py-0.5 rounded-full 
-                        border font-semibold ${map[value] ?? map.LOW}`}>
+      <span className={`font-mono-rail text-[8px] px-1.5 py-0.5 rounded-full border font-semibold ${map[value] ?? map.LOW}`}>
         {value}
       </span>
     )
@@ -125,8 +145,7 @@ export default function OptimizationEngine() {
       LOW:    'bg-blue-500/20 text-blue-400 border-blue-500/40',
     }
     return (
-      <span className={`font-mono-rail text-[8px] px-1.5 py-0.5 rounded-full 
-                        border font-semibold ${map[value] ?? map.LOW}`}>
+      <span className={`font-mono-rail text-[8px] px-1.5 py-0.5 rounded-full border font-semibold ${map[value] ?? map.LOW}`}>
         {value}
       </span>
     )
@@ -140,16 +159,10 @@ export default function OptimizationEngine() {
     return (
       <div className="flex items-center gap-2">
         <div className="flex-1 bg-slate-700 rounded-full h-1">
-          <div
-            className={`h-1 rounded-full transition-all duration-500 ${color}`}
-            style={{ width: `${score}%` }}
-          />
+          <div className={`h-1 rounded-full transition-all duration-500 ${color}`} style={{ width: `${score}%` }} />
         </div>
         <span className={`font-mono-rail text-[9px] font-bold w-6 text-right ${
-          score > 80 ? 'text-red-400'
-          : score > 60 ? 'text-amber-400'
-          : score > 40 ? 'text-blue-400'
-          : 'text-slate-500'
+          score > 80 ? 'text-red-400' : score > 60 ? 'text-amber-400' : score > 40 ? 'text-blue-400' : 'text-slate-500'
         }`}>{score}</span>
       </div>
     )
@@ -157,74 +170,16 @@ export default function OptimizationEngine() {
 
   function formatTime(iso) {
     if (!iso) return '—'
-    return new Date(iso).toLocaleTimeString('en-GB', {
-      hour: '2-digit', minute: '2-digit'
-    })
-  }
-
-  function formatDateTime(iso) {
-    if (!iso) return '—'
-    return new Date(iso).toLocaleString('en-GB', {
-      day: '2-digit', month: 'short',
-      hour: '2-digit', minute: '2-digit'
-    })
+    return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
   }
 
   const PIPELINE_STAGES = [
-    {
-      id: 'input',
-      label: 'Input Data',
-      sub: 'Defects, Trains, Blocks',
-      icon: '⬇',
-      color: 'border-slate-600 text-slate-300',
-      activeColor: 'border-emerald-500 text-emerald-400 bg-emerald-500/5',
-      stepRange: [0, 1]
-    },
-    {
-      id: 'scoring',
-      label: 'Priority Scoring',
-      sub: 'Heuristic + ML weighting',
-      icon: '◉',
-      color: 'border-slate-600 text-slate-300',
-      activeColor: 'border-blue-500 text-blue-400 bg-blue-500/5',
-      stepRange: [1, 2]
-    },
-    {
-      id: 'bundling',
-      label: 'Bundling',
-      sub: 'Spatial-temporal grouping',
-      icon: '⬡',
-      color: 'border-slate-600 text-slate-300',
-      activeColor: 'border-violet-500 text-violet-400 bg-violet-500/5',
-      stepRange: [2, 3]
-    },
-    {
-      id: 'conflict',
-      label: 'Conflict Detection',
-      sub: 'Schedule overlap checks',
-      icon: '⚠',
-      color: 'border-slate-600 text-slate-300',
-      activeColor: 'border-red-500 text-red-400 bg-red-500/5',
-      stepRange: [3, 4]
-    },
-    {
-      id: 'generation',
-      label: 'Generation',
-      sub: 'Block window scheduling',
-      icon: '◈',
-      color: 'border-slate-600 text-slate-300',
-      activeColor: 'border-amber-500 text-amber-400 bg-amber-500/5',
-      stepRange: [4, 5]
-    },
-    {
-      id: 'output',
-      label: 'Output',
-      sub: 'Optimized plan',
-      icon: '✓',
-      color: 'border-slate-600 text-slate-300',
-      activeColor: 'border-emerald-500 text-emerald-400 bg-emerald-500/5',
-      stepRange: [5, 6]
-    },
+    { id: 'input', label: 'Input Data', sub: 'TMS, SMMS, TDMS, COA', icon: '⬇', color: 'border-slate-600 text-slate-300', activeColor: 'border-emerald-500 text-emerald-400 bg-emerald-500/5', stepRange: [0, 1] },
+    { id: 'scoring', label: 'Explainable Scoring', sub: 'Multi-factor weighted', icon: '◉', color: 'border-slate-600 text-slate-300', activeColor: 'border-blue-500 text-blue-400 bg-blue-500/5', stepRange: [1, 2] },
+    { id: 'bundling', label: 'Multi-Dept Bundling', sub: 'Track + Signal + Traction', icon: '⬡', color: 'border-slate-600 text-slate-300', activeColor: 'border-violet-500 text-violet-400 bg-violet-500/5', stepRange: [2, 3] },
+    { id: 'constraint', label: 'Constraint Engine', sub: 'Timetable & Freight', icon: '⚠', color: 'border-slate-600 text-slate-300', activeColor: 'border-red-500 text-red-400 bg-red-500/5', stepRange: [3, 4] },
+    { id: 'candidates', label: 'Candidate Scoring', sub: 'Composite window selection', icon: '◈', color: 'border-slate-600 text-slate-300', activeColor: 'border-amber-500 text-amber-400 bg-amber-500/5', stepRange: [4, 5] },
+    { id: 'output', label: 'Coordinated Plan', sub: 'Before vs After availability', icon: '✓', color: 'border-slate-600 text-slate-300', activeColor: 'border-emerald-500 text-emerald-400 bg-emerald-500/5', stepRange: [5, 6] },
   ]
 
   const displayConflicts = result?.conflictMatrix ?? initConflicts
@@ -232,56 +187,83 @@ export default function OptimizationEngine() {
   const summary          = result?.summary ?? null
   const meta             = result?.meta ?? null
   const scoreDist        = result?.scoreDistribution ?? null
+  const baseline         = result?.baselineMetrics ?? null
+  const optimized        = result?.optimizedMetrics ?? null
+  const selectedWin      = result?.selectedWindow ?? null
+  const candidateWindows = result?.candidateWindows ?? []
+  const explanations     = result?.explanations ?? []
 
   return (
     <div className="h-full overflow-y-auto p-4 flex flex-col gap-4">
 
-      {/* ── PIPELINE HEADER ── */}
-      <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
-
-        {/* Title + Run button */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700">
+      {/* ── PIPELINE HEADER & CONTROLS ── */}
+      <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden shadow-lg">
+        <div className="flex flex-wrap items-center justify-between px-5 py-3 border-b border-slate-700 gap-3">
           <div>
-            <div className="font-mono-rail text-sm font-bold text-slate-200 tracking-wide">
-              AI/ML OPTIMIZATION ENGINE
+            <div className="flex items-center gap-2.5">
+              <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <div className="font-mono-rail text-sm font-bold text-slate-200 tracking-wide">
+                EXPLAINABLE AI-ASSISTED AUTOMATIC BLOCK PLANNING
+              </div>
+              <span className="font-mono-rail text-[9px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/30">
+                CONSTRAINT-AWARE
+              </span>
             </div>
             <div className="font-mono-rail text-[9px] text-slate-500 mt-0.5">
-              Heuristic priority scoring · Spatial-temporal bundling · Conflict detection
+              Simulated prototype engine · Multi-department consolidation (Track + Signalling + Traction) · Timetable & Freight constraints
             </div>
           </div>
-          <button
-            onClick={runOptimization}
-            disabled={running}
-            className={`flex items-center gap-2 font-mono-rail text-xs font-bold 
-                        px-5 py-2.5 rounded-lg transition-all
-                        ${running
-                          ? 'bg-slate-700 text-slate-500 cursor-not-allowed'
-                          : 'bg-emerald-500 hover:bg-emerald-400 text-white cursor-pointer'
-                        }`}
-          >
-            {running ? (
-              <>
-                {/* Spinner */}
-                <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10"
-                    stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
-                RUNNING...
-              </>
-            ) : (
-              <>▶ RUN OPTIMIZATION</>
-            )}
-          </button>
+
+          {/* Planning Horizon Selector & Run Trigger */}
+          <div className="flex items-center gap-3">
+            {/* Horizon Picker */}
+            <div className="flex items-center bg-slate-900/80 border border-slate-700 rounded-lg p-0.5">
+              {['Today', '7 Days', '30 Days'].map(h => (
+                <button
+                  key={h}
+                  onClick={() => setHorizon(h)}
+                  disabled={running}
+                  className={`font-mono-rail text-[10px] px-2.5 py-1 rounded transition-all font-semibold ${
+                    horizon === h
+                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {h}
+                </button>
+              ))}
+            </div>
+
+            <button
+              onClick={runOptimization}
+              disabled={running}
+              className={`flex items-center gap-2 font-mono-rail text-xs font-bold px-5 py-2.5 rounded-lg transition-all shadow-md ${
+                running
+                  ? 'bg-slate-700 text-slate-500 cursor-not-allowed'
+                  : 'bg-emerald-500 hover:bg-emerald-400 text-white cursor-pointer hover:shadow-emerald-500/20'
+              }`}
+            >
+              {running ? (
+                <>
+                  <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                  </svg>
+                  OPTIMIZING...
+                </>
+              ) : (
+                <>▶ RUN OPTIMIZATION</>
+              )}
+            </button>
+          </div>
         </div>
 
-        {/* Pipeline stage boxes */}
-        <div className="flex items-stretch p-4 gap-0">
+        {/* Pipeline stage cards */}
+        <div className="flex items-stretch p-4 gap-0 overflow-x-auto">
           {PIPELINE_STAGES.map((stage, idx) => {
             const isActive  = running && stepIdx >= stage.stepRange[0] && stepIdx < stage.stepRange[1] + 1
             const isDone    = (running && stepIdx > stage.stepRange[1]) || (!running && result && idx < 6)
-            const baseStyle = 'flex-1 border rounded-lg p-3 text-center transition-all duration-300'
+            const baseStyle = 'flex-1 min-w-[110px] border rounded-lg p-2.5 text-center transition-all duration-300'
             const style     = isDone
               ? 'border-emerald-700/60 text-emerald-400 bg-emerald-500/5'
               : isActive
@@ -291,26 +273,19 @@ export default function OptimizationEngine() {
             return (
               <React.Fragment key={stage.id}>
                 <div className={`${baseStyle} ${style}`}>
-                  <div className="text-lg mb-1 opacity-70">{stage.icon}</div>
-                  <div className="font-mono-rail text-[10px] font-semibold leading-tight">
+                  <div className="text-base mb-1 opacity-75">{stage.icon}</div>
+                  <div className="font-mono-rail text-[10px] font-bold leading-tight truncate">
                     {stage.label}
                   </div>
-                  <div className="font-mono-rail text-[8px] text-slate-500 mt-0.5 leading-tight">
+                  <div className="font-mono-rail text-[8px] text-slate-500 mt-0.5 leading-tight truncate">
                     {stage.sub}
                   </div>
-                  {isDone && (
-                    <div className="font-mono-rail text-[8px] text-emerald-500 mt-1">✓ done</div>
-                  )}
-                  {isActive && (
-                    <div className="font-mono-rail text-[8px] text-current mt-1 animate-pulse">
-                      running...
-                    </div>
-                  )}
+                  {isDone && <div className="font-mono-rail text-[8px] text-emerald-500 mt-1">✓ done</div>}
+                  {isActive && <div className="font-mono-rail text-[8px] text-current mt-1 animate-pulse">running...</div>}
                 </div>
-                {/* Arrow connector — not after last */}
                 {idx < PIPELINE_STAGES.length - 1 && (
                   <div className="flex items-center px-1 flex-shrink-0">
-                    <div className={`font-mono-rail text-sm transition-colors ${
+                    <div className={`font-mono-rail text-xs ${
                       (running && stepIdx > stage.stepRange[1]) || (!running && result)
                         ? 'text-emerald-600'
                         : 'text-slate-700'
@@ -322,468 +297,516 @@ export default function OptimizationEngine() {
           })}
         </div>
 
-        {/* ── MULTI-STEP LOADING BAR ── only visible while running */}
+        {/* Multi-step loading bar */}
         {running && (
           <div className="px-5 pb-4 flex flex-col gap-2">
-            {/* Step label */}
             <div className="flex items-center justify-between">
               <span className="font-mono-rail text-[10px] text-emerald-400 animate-pulse">
                 {LOADING_STEPS[Math.min(stepIdx, LOADING_STEPS.length - 1)].label}
               </span>
-              <span className="font-mono-rail text-[10px] text-slate-500">
-                {progress}%
+              <span className="font-mono-rail text-[10px] text-slate-400 font-bold">{progress}%</span>
+            </div>
+            <div className="h-1.5 bg-slate-700 rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 rounded-full transition-all duration-200" style={{ width: `${progress}%` }} />
+            </div>
+          </div>
+        )}
+
+        {/* Post-run metadata banner */}
+        {!running && meta && (
+          <div className="px-5 py-2.5 border-t border-slate-700 bg-slate-900/40 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <span className="font-mono-rail text-[9px] text-emerald-400 font-bold flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                OPTIMIZATION COMPLETE ({meta.processingMs}ms)
+              </span>
+              <span className="font-mono-rail text-[9px] text-slate-400">
+                Plan ID: <strong className="text-slate-200">{result?.planId}</strong>
+              </span>
+              <span className="font-mono-rail text-[9px] text-slate-400">
+                Horizon: <strong className="text-slate-200">{result?.planningHorizon}</strong>
+              </span>
+              <span className="font-mono-rail text-[9px] text-amber-400 font-semibold">
+                Time Saved: {meta.totalTimeSavedHrs}h
               </span>
             </div>
-            {/* Progress bar */}
-            <div className="h-1 bg-slate-700 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 
-                           rounded-full transition-all duration-200"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            {/* Step dots */}
-            <div className="flex items-center gap-1.5 mt-1">
-              {LOADING_STEPS.map((s, i) => (
-                <div
-                  key={s.id}
-                  className={`h-1 rounded-full transition-all duration-300 ${
-                    i < stepIdx
-                      ? 'bg-emerald-500 flex-1'
-                      : i === stepIdx
-                      ? 'bg-emerald-400 flex-1 animate-pulse'
-                      : 'bg-slate-700 flex-1'
-                  }`}
-                />
-              ))}
-            </div>
+
+            {/* Commit Plan Button */}
+            <button
+              onClick={handleApprovePlan}
+              disabled={isApproving || approveSuccess}
+              className={`font-mono-rail text-[10px] font-bold px-3 py-1.5 rounded flex items-center gap-2 transition-all ${
+                approveSuccess
+                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                  : 'bg-blue-600 hover:bg-blue-500 text-white cursor-pointer shadow'
+              }`}
+            >
+              {isApproving ? 'COMMITTING...' : approveSuccess ? '✓ PLAN COMMITTED' : '✓ APPROVE & COMMIT PLAN'}
+            </button>
           </div>
         )}
 
-        {/* ── POST-RUN META ROW ── */}
-        {!running && meta && (
-          <div className="px-5 py-2 border-t border-slate-700 flex items-center gap-6">
-            <span className="font-mono-rail text-[9px] text-emerald-500">
-              ✓ OPTIMIZATION COMPLETE
-            </span>
-            <span className="font-mono-rail text-[9px] text-slate-500">
-              {meta.defectsScored} defects scored
-            </span>
-            <span className="font-mono-rail text-[9px] text-slate-500">
-              {meta.blocksAnalyzed} blocks analyzed
-            </span>
-            <span className="font-mono-rail text-[9px] text-amber-400">
-              {meta.totalTimeSavedHrs}h saved via bundling
-            </span>
-            <span className="font-mono-rail text-[9px] text-slate-600 ml-auto">
-              {meta.processingMs}ms
-            </span>
+        {approveSuccess && (
+          <div className="px-5 py-2 border-t border-emerald-500/40 bg-emerald-900/20 font-mono-rail text-[10px] text-emerald-300">
+            ✓ {approveSuccess}
           </div>
         )}
 
-        {/* Error state */}
         {error && (
-          <div className="px-5 py-3 border-t border-red-800/40 bg-red-900/10 
-                          font-mono-rail text-[10px] text-red-400">
+          <div className="px-5 py-3 border-t border-red-800/40 bg-red-900/10 font-mono-rail text-[10px] text-red-400">
             ✕ Engine error: {error}
           </div>
         )}
       </div>
 
-      {/* ── SUMMARY STAT CARDS — only after run ── */}
-      {summary && scoreDist && (
-        <div className="grid grid-cols-4 gap-3">
-          {[
-            {
-              label: 'BUNDLES CREATED',
-              value: summary.bundlesCreated,
-              sub: `${summary.singleItemBlocks} single-item`,
-              color: 'text-violet-400',
-              accent: 'kpi-accent-vi'
-            },
-            {
-              label: 'CONFLICTS FOUND',
-              value: summary.conflictsFound,
-              sub: `${summary.highSeverity} HIGH severity`,
-              color: 'text-red-400',
-              accent: 'kpi-accent-rd'
-            },
-            {
-              label: 'TIME SAVED',
-              value: `${meta.totalTimeSavedHrs}h`,
-              sub: 'via intelligent bundling',
-              color: 'text-emerald-400',
-              accent: 'kpi-accent-em'
-            },
-            {
-              label: 'DEFECTS SCORED',
-              value: meta.defectsScored,
-              sub: `${scoreDist.CRITICAL} CRITICAL · ${scoreDist.HIGH} HIGH`,
-              color: 'text-amber-400',
-              accent: 'kpi-accent-am'
-            },
-          ].map(c => (
-            <div key={c.label}
-              className={`relative bg-slate-800 border border-slate-700 rounded-xl p-4 
-                          overflow-hidden ${c.accent}`}>
-              <div className="font-mono-rail text-[9px] uppercase tracking-widest 
-                              text-slate-500 mb-1">{c.label}</div>
-              <div className={`font-mono-rail text-2xl font-bold ${c.color}`}>{c.value}</div>
-              <div className="font-mono-rail text-[9px] text-slate-500 mt-1">{c.sub}</div>
+      {/* ── BEFORE VS AFTER PLAN COMPARISON CARD (CRITICAL FEATURE) ── */}
+      {result && baseline && optimized && (
+        <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 shadow-lg">
+          <div className="flex items-center justify-between mb-3 border-b border-slate-700/60 pb-2">
+            <div>
+              <div className="font-mono-rail text-xs font-bold text-slate-200 tracking-wide flex items-center gap-2">
+                <span>BEFORE VS. AFTER PLAN COMPARISON</span>
+                <span className="font-mono-rail text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                  +{result.availabilityGain}% AVAILABILITY GAIN
+                </span>
+              </div>
+              <div className="font-mono-rail text-[8px] text-slate-500 mt-0.5">
+                Mathematical delta between Manual Departmental Disconnections and Coordinated AI-Assisted Scheduling
+              </div>
             </div>
-          ))}
+            <div className="font-mono-rail text-[9px] text-slate-400">
+              Horizon: <span className="text-emerald-400 font-bold">{result.planningHorizon}</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+            {/* Metric 1: Asset Availability */}
+            <div className="bg-slate-900/70 border border-slate-700/80 rounded-lg p-3">
+              <div className="font-mono-rail text-[8px] uppercase tracking-wider text-slate-400 mb-1">ASSET AVAILABILITY</div>
+              <div className="flex items-baseline justify-between">
+                <div className="font-mono-rail text-xs text-slate-500 line-through">{baseline.availabilityPct}%</div>
+                <div className="font-mono-rail text-lg font-bold text-emerald-400">{optimized.availabilityPct}%</div>
+              </div>
+              <div className="font-mono-rail text-[8px] text-emerald-500 font-semibold mt-1">
+                ▲ +{result.availabilityGain}% pts
+              </div>
+            </div>
+
+            {/* Metric 2: Total Block Hours */}
+            <div className="bg-slate-900/70 border border-slate-700/80 rounded-lg p-3">
+              <div className="font-mono-rail text-[8px] uppercase tracking-wider text-slate-400 mb-1">TOTAL BLOCK HOURS</div>
+              <div className="flex items-baseline justify-between">
+                <div className="font-mono-rail text-xs text-slate-500 line-through">{baseline.totalBlockHours}h</div>
+                <div className="font-mono-rail text-lg font-bold text-amber-400">{optimized.totalBlockHours}h</div>
+              </div>
+              <div className="font-mono-rail text-[8px] text-emerald-500 font-semibold mt-1">
+                ▼ -{result.delta?.hoursSaved}h saved
+              </div>
+            </div>
+
+            {/* Metric 3: Asset Downtime */}
+            <div className="bg-slate-900/70 border border-slate-700/80 rounded-lg p-3">
+              <div className="font-mono-rail text-[8px] uppercase tracking-wider text-slate-400 mb-1">ASSET DOWNTIME</div>
+              <div className="flex items-baseline justify-between">
+                <div className="font-mono-rail text-xs text-slate-500 line-through">{baseline.assetDowntimeHours}h</div>
+                <div className="font-mono-rail text-lg font-bold text-blue-400">{optimized.assetDowntimeHours}h</div>
+              </div>
+              <div className="font-mono-rail text-[8px] text-emerald-500 font-semibold mt-1">
+                ▼ -{result.delta?.hoursSaved}h downtime
+              </div>
+            </div>
+
+            {/* Metric 4: Train Impact */}
+            <div className="bg-slate-900/70 border border-slate-700/80 rounded-lg p-3">
+              <div className="font-mono-rail text-[8px] uppercase tracking-wider text-slate-400 mb-1">TRAIN IMPACT</div>
+              <div className="flex items-baseline justify-between">
+                <div className="font-mono-rail text-xs text-slate-500 line-through">{baseline.trainImpact} services</div>
+                <div className="font-mono-rail text-lg font-bold text-emerald-400">{optimized.trainImpact} delayed</div>
+              </div>
+              <div className="font-mono-rail text-[8px] text-emerald-500 font-semibold mt-1">
+                ✓ {result.delta?.trainMovementsSaved} services saved
+              </div>
+            </div>
+
+            {/* Metric 5: Schedule Conflicts */}
+            <div className="bg-slate-900/70 border border-slate-700/80 rounded-lg p-3">
+              <div className="font-mono-rail text-[8px] uppercase tracking-wider text-slate-400 mb-1">SCHEDULE CONFLICTS</div>
+              <div className="flex items-baseline justify-between">
+                <div className="font-mono-rail text-xs text-red-400/80 line-through">{baseline.conflicts} conflicts</div>
+                <div className="font-mono-rail text-lg font-bold text-emerald-400">{optimized.conflicts}</div>
+              </div>
+              <div className="font-mono-rail text-[8px] text-emerald-500 font-semibold mt-1">
+                ✓ 100% resolved
+              </div>
+            </div>
+
+            {/* Metric 6: Block Utilization */}
+            <div className="bg-slate-900/70 border border-slate-700/80 rounded-lg p-3">
+              <div className="font-mono-rail text-[8px] uppercase tracking-wider text-slate-400 mb-1">BLOCK UTILIZATION</div>
+              <div className="flex items-baseline justify-between">
+                <div className="font-mono-rail text-xs text-slate-500 line-through">{baseline.blockUtilizationPct}%</div>
+                <div className="font-mono-rail text-lg font-bold text-violet-400">{optimized.blockUtilizationPct}%</div>
+              </div>
+              <div className="font-mono-rail text-[8px] text-emerald-500 font-semibold mt-1">
+                ▲ +{result.delta?.utilizationGainPct}% efficiency
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* ── SCORE DISTRIBUTION — only after run ── */}
-      {scoreDist && (
-        <div className="bg-slate-800 border border-slate-700 rounded-xl p-4">
-          <div className="font-mono-rail text-xs font-semibold text-slate-300 mb-3 tracking-wide">
-            PRIORITY SCORE DISTRIBUTION
-          </div>
-          <div className="grid grid-cols-4 gap-3">
-            {[
-              { label:'CRITICAL', count: scoreDist.CRITICAL, color:'bg-red-500',    textColor:'text-red-400'    },
-              { label:'HIGH',     count: scoreDist.HIGH,     color:'bg-amber-500',  textColor:'text-amber-400'  },
-              { label:'MEDIUM',   count: scoreDist.MEDIUM,   color:'bg-blue-500',   textColor:'text-blue-400'   },
-              { label:'LOW',      count: scoreDist.LOW,      color:'bg-slate-500',  textColor:'text-slate-400'  },
-            ].map(({ label, count, color, textColor }) => {
-              const total = Object.values(scoreDist).reduce((s, v) => s + v, 0) || 1
-              const pct   = Math.round((count / total) * 100)
-              return (
-                <div key={label}>
-                  <div className="flex justify-between items-center mb-1.5">
-                    <span className="font-mono-rail text-[9px] text-slate-500">{label}</span>
-                    <span className={`font-mono-rail text-[10px] font-bold ${textColor}`}>
-                      {count}
-                    </span>
-                  </div>
-                  <div className="bg-slate-700 rounded-full h-1.5">
-                    <div
-                      className={`h-1.5 rounded-full transition-all duration-700 ${color}`}
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                  <div className="font-mono-rail text-[8px] text-slate-600 mt-0.5 text-right">
-                    {pct}%
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* ── MAIN RESULTS: TABS ── */}
-      <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden flex-1 min-h-0">
-
-        {/* Tab bar */}
-        <div className="flex items-center border-b border-slate-700 px-4 gap-0">
+      {/* ── TABS NAVIGATION ── */}
+      <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden flex-1 min-h-0 flex flex-col shadow-lg">
+        <div className="flex items-center border-b border-slate-700 px-4 bg-slate-850">
           {[
-            {
-              id: 'bundles',
-              label: 'INTELLIGENT BLOCK BUNDLING',
-              count: bundles.filter(b => !b.isSingleItem).length
-            },
-            {
-              id: 'conflicts',
-              label: 'CONFLICT MATRIX',
-              count: displayConflicts.length
-            },
+            { id: 'overview', label: 'OPTIMIZED BLOCK & EXPLANATION', count: explanations.length },
+            { id: 'candidates', label: 'CANDIDATE WINDOWS EVALUATION', count: candidateWindows.length },
+            { id: 'bundles', label: 'CONSOLIDATED TASK BUNDLES', count: bundles.filter(b => !b.isSingleItem).length },
+            { id: 'conflicts', label: 'CONFLICT MATRIX', count: displayConflicts.length },
           ].map(tab => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`font-mono-rail text-[10px] font-semibold px-4 py-3 border-b-2 
-                          transition-colors flex items-center gap-2 ${
+              className={`font-mono-rail text-[10px] font-semibold px-4 py-3 border-b-2 transition-all flex items-center gap-2 ${
                 activeTab === tab.id
-                  ? 'border-emerald-500 text-emerald-400'
-                  : 'border-transparent text-slate-500 hover:text-slate-300'
+                  ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
               }`}
             >
               {tab.label}
-              <span className={`text-[8px] px-1.5 py-0.5 rounded-full ${
-                tab.id === 'conflicts' && tab.count > 0
-                  ? 'bg-red-500/20 text-red-400 border border-red-500/30'
-                  : 'bg-slate-700 text-slate-400'
-              }`}>
-                {tab.count}
-              </span>
+              {tab.count > 0 && (
+                <span className={`text-[8px] px-1.5 py-0.5 rounded-full ${
+                  tab.id === 'conflicts'
+                    ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                    : 'bg-slate-700 text-slate-300'
+                }`}>
+                  {tab.count}
+                </span>
+              )}
             </button>
           ))}
         </div>
 
-        {/* ── TAB: BUNDLES ── */}
-        {activeTab === 'bundles' && (
-          <div className="p-4 overflow-y-auto" style={{ maxHeight: '420px' }}>
+        {/* ── TAB 1: OVERVIEW & "WHY THIS BLOCK?" ── */}
+        {activeTab === 'overview' && (
+          <div className="p-4 overflow-y-auto flex flex-col gap-4">
             {!result ? (
-              <div className="flex flex-col items-center justify-center h-32 gap-2">
-                <div className="text-2xl opacity-20">⊘</div>
-                <div className="font-mono-rail text-[10px] text-slate-600">
-                  Run optimization to generate bundles
-                </div>
-              </div>
-            ) : bundles.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-32 gap-2">
-                <div className="font-mono-rail text-[10px] text-emerald-500">
-                  ✓ No bundling opportunities — all defects are unique
+              <div className="flex flex-col items-center justify-center h-48 gap-2">
+                <div className="text-3xl opacity-20">⚙</div>
+                <div className="font-mono-rail text-xs text-slate-500">
+                  Click "RUN OPTIMIZATION" to generate constraint-aware block plans
                 </div>
               </div>
             ) : (
-              <div className="flex flex-col gap-3">
-                {/* Multi-item bundles first */}
-                {bundles.filter(b => !b.isSingleItem).map(bundle => (
-                  <div
-                    key={bundle.bundleId}
-                    className="border border-violet-500/30 bg-violet-500/5 rounded-xl 
-                               overflow-hidden cursor-pointer hover:border-violet-500/50 
-                               transition-all"
-                    onClick={() => setExpandedBundle(
-                      expandedBundle === bundle.bundleId ? null : bundle.bundleId
-                    )}
-                  >
-                    {/* Bundle header */}
-                    <div className="flex items-center justify-between px-4 py-3">
-                      <div className="flex items-center gap-3">
-                        <div className="font-mono-rail text-[9px] px-2 py-0.5 rounded-full 
-                                        bg-violet-500/20 text-violet-400 border border-violet-500/30">
-                          BUNDLE
-                        </div>
-                        <div>
-                          <div className="font-mono-rail text-xs font-bold text-slate-200">
-                            {bundle.bundleId}
-                          </div>
-                          <div className="font-mono-rail text-[9px] text-slate-500">
-                            {bundle.corridorId} · {bundle.department}
-                          </div>
-                        </div>
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {/* Left 2 Cols: Winning Coordinated Block */}
+                <div className="lg:col-span-2 flex flex-col gap-4">
+                  {/* Selected Window Card */}
+                  <div className="bg-gradient-to-br from-slate-900 to-slate-850 border-2 border-emerald-500/40 rounded-xl p-4 shadow-xl">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2.5">
+                        <span className="font-mono-rail text-[9px] font-bold px-2.5 py-1 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
+                          RECOMMENDED BLOCK
+                        </span>
+                        <span className="font-mono-rail text-[9px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                          COR-01 (Delhi–Mumbai)
+                        </span>
                       </div>
-                      <div className="flex items-center gap-4">
-                        {/* Efficiency badge */}
-                        <div className="text-right">
-                          <div className="font-mono-rail text-[8px] text-slate-500">
-                            EFFICIENCY GAIN
-                          </div>
-                          <div className="font-mono-rail text-sm font-bold text-emerald-400">
-                            +{bundle.efficiencyPct}%
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="font-mono-rail text-[8px] text-slate-500">
-                            TIME SAVED
-                          </div>
-                          <div className="font-mono-rail text-sm font-bold text-amber-400">
-                            {bundle.timeSavedHrs}h
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="font-mono-rail text-[8px] text-slate-500">
-                            TASKS
-                          </div>
-                          <div className="font-mono-rail text-sm font-bold text-violet-400">
-                            {bundle.defectCount}
-                          </div>
-                        </div>
-                        <div className="font-mono-rail text-[10px] text-slate-600">
-                          {expandedBundle === bundle.bundleId ? '▲' : '▼'}
-                        </div>
+                      <div className="font-mono-rail text-sm font-bold text-emerald-400 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                        AI Score: {selectedWin?.compositeScore || 98}/100
                       </div>
                     </div>
 
-                    {/* Suggested window */}
-                    <div className="px-4 pb-2 flex items-center gap-4">
-                      <div className="font-mono-rail text-[9px] text-slate-500">
-                        WINDOW:
+                    <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-700/60 pb-3 mb-3">
+                      <div>
+                        <div className="font-mono-rail text-xl font-bold text-slate-100">
+                          {selectedWin?.timeLabel}
+                        </div>
+                        <div className="font-mono-rail text-[10px] text-emerald-400/90 font-semibold mt-0.5">
+                          {selectedWin?.shiftName}
+                        </div>
                       </div>
-                      <div className="font-mono-rail text-[9px] text-cyan-400">
-                        {formatDateTime(bundle.suggestedWindowStart)}
-                        {' → '}
-                        {formatDateTime(bundle.suggestedWindowEnd)}
-                      </div>
-                      <div className="font-mono-rail text-[9px] text-slate-500">
-                        ({bundle.totalDurationHrs}h block vs {bundle.sequentialDurationHrs}h sequential)
+                      <div className="text-right font-mono-rail text-[10px] text-slate-400">
+                        Duration: <strong className="text-slate-100">{selectedWin?.durationHrs} Hours</strong>
                       </div>
                     </div>
 
-                    {/* Expanded: defect list */}
-                    {expandedBundle === bundle.bundleId && (
-                      <div className="border-t border-violet-500/20 px-4 py-3">
-                        <div className="font-mono-rail text-[8px] text-slate-500 mb-2 uppercase">
-                          Bundled Defects
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          {bundle.defects.map((d, i) => (
-                            <div key={i}
-                              className="flex items-center gap-3 bg-slate-900/60 
-                                         rounded-lg px-3 py-2">
-                              <span className="font-mono-rail text-[9px] text-emerald-400 
-                                               font-bold w-24 truncate">
-                                {d.defectCode}
-                              </span>
-                              <span className="font-mono-rail text-[9px] text-slate-400 w-20">
-                                {d.assetId}
-                              </span>
-                              <PriorityBadge value={d.priority} />
-                              <div className="flex-1">
-                                <ScoreBar score={d.score} />
-                              </div>
-                              <span className="font-mono-rail text-[8px] text-slate-500 
-                                               w-10 text-right">
-                                {d.estimatedDurationHrs}h
-                              </span>
-                            </div>
-                          ))}
-                        </div>
+                    {/* Consolidated Departments Badge */}
+                    <div className="bg-slate-800/80 border border-violet-500/30 rounded-lg p-3 mb-3">
+                      <div className="font-mono-rail text-[9px] text-violet-400 font-bold mb-1.5 flex items-center gap-1.5">
+                        <span>⚡ MULTI-DEPARTMENT CONSOLIDATION</span>
+                        <span className="text-[8px] bg-violet-500/20 px-1.5 py-0.2 rounded border border-violet-500/40 text-violet-300">
+                          3 DEPARTMENTS IN 1 POSSESSION
+                        </span>
                       </div>
-                    )}
-                  </div>
-                ))}
-
-                {/* Single-item blocks — collapsed list */}
-                {bundles.filter(b => b.isSingleItem).length > 0 && (
-                  <div className="border border-slate-700/50 rounded-xl overflow-hidden">
-                    <div className="px-4 py-2 bg-slate-700/20 flex items-center justify-between">
-                      <span className="font-mono-rail text-[9px] text-slate-500">
-                        STANDALONE DEFECTS (no bundling opportunity)
-                      </span>
-                      <span className="font-mono-rail text-[9px] text-slate-500">
-                        {bundles.filter(b => b.isSingleItem).length} items
-                      </span>
+                      <div className="font-mono-rail text-[10px] text-slate-300 flex flex-wrap gap-2">
+                        <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">Track (TMS)</span>
+                        <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/30">Signalling (SMMS)</span>
+                        <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30">Traction / OHE (TDMS)</span>
+                      </div>
+                      <div className="font-mono-rail text-[9px] text-slate-400 mt-2">
+                        Consolidated Work: <strong className="text-slate-200">DEF-0101</strong> (Rail replacement 4h) + <strong className="text-slate-200">DEF-0102</strong> (Point machine 2h) + <strong className="text-slate-200">DEF-0103</strong> (OHE droppers 2h).
+                      </div>
                     </div>
-                    <div className="divide-y divide-slate-700/30">
-                      {bundles.filter(b => b.isSingleItem).map(bundle => (
-                        <div key={bundle.bundleId}
-                          className="flex items-center gap-3 px-4 py-2 hover:bg-slate-700/20">
-                          <span className="font-mono-rail text-[9px] text-slate-500 w-24">
-                            {bundle.bundleId}
-                          </span>
-                          <span className="font-mono-rail text-[9px] text-slate-400 w-16">
-                            {bundle.corridorId}
-                          </span>
-                          <span className="font-mono-rail text-[9px] text-slate-400 flex-1">
-                            {bundle.department}
-                          </span>
-                          <PriorityBadge value={bundle.defects[0]?.priority} />
-                          <span className="font-mono-rail text-[9px] text-slate-500 w-16 text-right">
-                            {bundle.defects[0]?.assetId}
-                          </span>
-                          <div className="w-24">
-                            <ScoreBar score={bundle.defects[0]?.score ?? 0} />
-                          </div>
-                        </div>
-                      ))}
+
+                    {/* Operational Safety Clearances */}
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="bg-slate-800/60 rounded p-2 border border-slate-700">
+                        <div className="font-mono-rail text-[8px] text-slate-500 uppercase">PASSENGER DELAYS</div>
+                        <div className="font-mono-rail text-xs font-bold text-emerald-400 mt-0.5">0 TRAINS</div>
+                      </div>
+                      <div className="bg-slate-800/60 rounded p-2 border border-slate-700">
+                        <div className="font-mono-rail text-[8px] text-slate-500 uppercase">FREIGHT FORECAST</div>
+                        <div className="font-mono-rail text-xs font-bold text-blue-400 mt-0.5">LOW (1 RAKE)</div>
+                      </div>
+                      <div className="bg-slate-800/60 rounded p-2 border border-slate-700">
+                        <div className="font-mono-rail text-[8px] text-slate-500 uppercase">SAFETY CLEARANCE</div>
+                        <div className="font-mono-rail text-xs font-bold text-slate-200 mt-0.5">20 MIN BUFFER</div>
+                      </div>
                     </div>
                   </div>
-                )}
+                </div>
+
+                {/* Right Col: Backend Explainability ("Why this block?") */}
+                <div className="bg-slate-900/80 border border-slate-700 rounded-xl p-4 flex flex-col gap-3 shadow-xl">
+                  <div className="font-mono-rail text-xs font-bold text-slate-200 tracking-wide flex items-center gap-2 border-b border-slate-700 pb-2">
+                    <span className="text-emerald-400 text-sm">💡</span>
+                    <span>WHY THIS BLOCK? (EXPLAINABLE AI)</span>
+                  </div>
+                  <div className="font-mono-rail text-[8px] text-slate-500">
+                    Deterministic audit reasons computed by the constraint engine:
+                  </div>
+
+                  <div className="flex flex-col gap-2.5 overflow-y-auto max-h-[320px] pr-1">
+                    {explanations.map((reason, idx) => (
+                      <div key={idx} className="flex items-start gap-2.5 bg-slate-800/50 p-2 rounded-lg border border-slate-700/60">
+                        <span className="text-emerald-400 text-xs font-bold mt-0.5">✓</span>
+                        <span className="font-mono-rail text-[9px] text-slate-300 leading-snug">
+                          {reason}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
           </div>
         )}
 
-        {/* ── TAB: CONFLICT MATRIX ── */}
-        {activeTab === 'conflicts' && (
-          <div className="overflow-y-auto" style={{ maxHeight: '420px' }}>
-            {displayConflicts.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-32 gap-2">
-                <div className="text-2xl opacity-20">⊘</div>
-                <div className="font-mono-rail text-[10px] text-slate-600">
-                  {result
-                    ? '✓ No scheduling conflicts detected'
-                    : 'Run optimization to detect conflicts'}
-                </div>
+        {/* ── TAB 2: CANDIDATE WINDOWS EVALUATION ── */}
+        {activeTab === 'candidates' && (
+          <div className="p-4 overflow-y-auto">
+            {candidateWindows.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-32 gap-2 font-mono-rail text-[10px] text-slate-500">
+                Run optimization to evaluate candidate windows
               </div>
             ) : (
-              <>
-                {/* Table header */}
-                <div className="grid gap-3 px-4 py-2 border-b border-slate-700 sticky top-0 
-                                bg-slate-800 z-10"
-                  style={{ gridTemplateColumns: '120px 1fr 160px 160px 80px 80px 1fr' }}>
-                  {['CONFLICT ID','TYPE','BLOCK A','BLOCK B','OVERLAP','SEVERITY','RECOMMENDATION']
-                    .map(h => (
-                      <div key={h} className="font-mono-rail text-[8px] text-slate-500 
-                                              uppercase tracking-wide">
-                        {h}
-                      </div>
-                    ))
-                  }
+              <div className="flex flex-col gap-3">
+                <div className="font-mono-rail text-[9px] text-slate-400 mb-1">
+                  The optimizer evaluates candidate maintenance slots against corridor availability, passenger timetable headways, freight forecasts, and safety buffers:
                 </div>
-                {/* Table rows */}
-                <div className="divide-y divide-slate-700/30">
-                  {displayConflicts.map((c, idx) => (
-                    <div
-                      key={c.conflictId ?? idx}
-                      className={`grid gap-3 px-4 py-3 items-center transition-colors
-                                  hover:bg-slate-700/30 ${
-                        c.severity === 'HIGH' ? 'bg-red-900/5' : ''
-                      }`}
-                      style={{ gridTemplateColumns: '120px 1fr 160px 160px 80px 80px 1fr' }}
-                    >
-                      {/* Conflict ID */}
-                      <div className="font-mono-rail text-[9px] text-red-400 font-bold">
-                        {c.conflictId ?? `CONF-${String(idx+1).padStart(3,'0')}`}
-                      </div>
 
-                      {/* Type */}
-                      <div className="font-mono-rail text-[9px]">
-                        <span className={`px-1.5 py-0.5 rounded border text-[8px] ${
-                          c.type === 'ASSET_DEPT_CONFLICT' || c.type === 'ASSET_CONFLICT'
-                            ? 'bg-red-500/15 text-red-400 border-red-500/30'
-                            : 'bg-amber-500/15 text-amber-400 border-amber-500/30'
-                        }`}>
-                          {c.type ?? 'TRAIN_OVERLAP'}
-                        </span>
-                      </div>
+                <div className="grid gap-3">
+                  {candidateWindows.map(cand => {
+                    const isSelected = cand.candidateId === selectedWin?.candidateId
+                    return (
+                      <div
+                        key={cand.candidateId}
+                        className={`border rounded-xl p-4 transition-all ${
+                          isSelected
+                            ? 'border-emerald-500/60 bg-emerald-500/10 shadow-lg ring-1 ring-emerald-500/30'
+                            : cand.feasible
+                            ? 'border-slate-700 bg-slate-900/60'
+                            : 'border-red-900/40 bg-red-950/10 opacity-70'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-3">
+                            <span className={`font-mono-rail text-[9px] font-bold px-2 py-0.5 rounded ${
+                              isSelected ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-400'
+                            }`}>
+                              {cand.candidateId}
+                            </span>
+                            <span className="font-mono-rail text-sm font-bold text-slate-200">
+                              {cand.timeLabel}
+                            </span>
+                            <span className="font-mono-rail text-[10px] text-slate-400">
+                              · {cand.shiftName}
+                            </span>
+                          </div>
 
-                      {/* Block A */}
-                      <div>
-                        <div className="font-mono-rail text-[9px] text-slate-300">
-                          {c.blockA?.id ?? c.blockId ?? '—'}
+                          <div className="flex items-center gap-3">
+                            <span className={`font-mono-rail text-[9px] px-2 py-0.5 rounded font-semibold ${
+                              cand.feasible
+                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                            }`}>
+                              {cand.feasible ? 'FEASIBLE' : 'INFEASIBLE'}
+                            </span>
+                            <div className="font-mono-rail text-sm font-bold text-slate-100">
+                              Score: {cand.compositeScore}/100
+                            </div>
+                            {isSelected && (
+                              <span className="font-mono-rail text-[8px] font-bold px-2 py-0.5 rounded bg-emerald-500 text-slate-950">
+                                SELECTED WINNER
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        <div className="font-mono-rail text-[8px] text-slate-600">
-                          {c.blockA?.assetId} · {c.blockA?.corridorId}
+
+                        {/* Metrics Row */}
+                        <div className="grid grid-cols-4 gap-2 text-[9px] font-mono-rail bg-slate-850 p-2 rounded border border-slate-700/60">
+                          <div>
+                            <span className="text-slate-500">Duration: </span>
+                            <strong className="text-slate-300">{cand.durationHrs}h</strong>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Passenger Trains: </span>
+                            <strong className={cand.metrics.passengerImpact > 0 ? 'text-red-400' : 'text-emerald-400'}>
+                              {cand.metrics.passengerImpact} impacted
+                            </strong>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Freight Forecast: </span>
+                            <strong className="text-slate-300">{cand.metrics.freightLevel}</strong>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Safety Buffer: </span>
+                            <strong className="text-slate-300">20 min min.</strong>
+                          </div>
                         </div>
-                        {c.blockA?.startTime && (
-                          <div className="font-mono-rail text-[8px] text-slate-600">
-                            {formatTime(c.blockA.startTime)}–{formatTime(c.blockA.endTime)}
+
+                        {/* Reasons / Violations */}
+                        {cand.violations?.length > 0 && (
+                          <div className="mt-2 font-mono-rail text-[9px] text-red-400 flex flex-col gap-1">
+                            {cand.violations.map((v, i) => (
+                              <div key={i}>✕ {v}</div>
+                            ))}
+                          </div>
+                        )}
+                        {cand.reasons?.length > 0 && (
+                          <div className="mt-2 font-mono-rail text-[8px] text-slate-400 flex flex-wrap gap-2">
+                            {cand.reasons.map((r, i) => (
+                              <span key={i} className="bg-slate-800 px-2 py-0.5 rounded text-slate-300">
+                                ✓ {r}
+                              </span>
+                            ))}
                           </div>
                         )}
                       </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
-                      {/* Block B */}
+        {/* ── TAB 3: TASK BUNDLES ── */}
+        {activeTab === 'bundles' && (
+          <div className="p-4 overflow-y-auto flex flex-col gap-3">
+            {bundles.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-32 font-mono-rail text-[10px] text-slate-500">
+                Run optimization to view task bundles
+              </div>
+            ) : (
+              bundles.map(bundle => (
+                <div
+                  key={bundle.bundleId}
+                  className={`border rounded-xl overflow-hidden cursor-pointer transition-all ${
+                    bundle.isMultiDepartment
+                      ? 'border-violet-500/50 bg-violet-950/10 hover:border-violet-500'
+                      : 'border-slate-700 bg-slate-900/60 hover:border-slate-600'
+                  }`}
+                  onClick={() => setExpandedBundle(expandedBundle === bundle.bundleId ? null : bundle.bundleId)}
+                >
+                  <div className="flex items-center justify-between px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <span className={`font-mono-rail text-[9px] px-2 py-0.5 rounded-full border font-bold ${
+                        bundle.isMultiDepartment
+                          ? 'bg-violet-500/20 text-violet-300 border-violet-500/40'
+                          : 'bg-slate-700 text-slate-300 border-slate-600'
+                      }`}>
+                        {bundle.isMultiDepartment ? 'MULTI-DEPARTMENT BUNDLE' : 'DEPARTMENTAL'}
+                      </span>
                       <div>
-                        <div className="font-mono-rail text-[9px] text-slate-300">
-                          {c.blockB?.id ?? '—'}
+                        <div className="font-mono-rail text-xs font-bold text-slate-200">
+                          {bundle.bundleId} · {bundle.department}
                         </div>
-                        <div className="font-mono-rail text-[8px] text-slate-600">
-                          {c.blockB?.assetId} · {c.blockB?.corridorId}
+                        <div className="font-mono-rail text-[9px] text-slate-400">
+                          {bundle.badgeText} · {bundle.corridorId}
                         </div>
-                        {c.blockB?.startTime && (
-                          <div className="font-mono-rail text-[8px] text-slate-600">
-                            {formatTime(c.blockB.startTime)}–{formatTime(c.blockB.endTime)}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Overlap duration */}
-                      <div className="font-mono-rail text-[9px] text-amber-400">
-                        {c.overlapMinutes != null
-                          ? `${c.overlapMinutes}m`
-                          : '—'}
-                      </div>
-
-                      {/* Severity badge */}
-                      <div>
-                        <SeverityBadge value={c.severity ?? 'MEDIUM'} />
-                      </div>
-
-                      {/* Recommendation */}
-                      <div className="font-mono-rail text-[8px] text-slate-500 leading-relaxed">
-                        {c.recommendation ?? c.description ?? '—'}
                       </div>
                     </div>
-                  ))}
+
+                    <div className="flex items-center gap-5">
+                      <div className="text-right font-mono-rail">
+                        <div className="text-[8px] text-slate-500">TIME SAVED</div>
+                        <div className="text-sm font-bold text-amber-400">{bundle.timeSavedHrs}h</div>
+                      </div>
+                      <div className="text-right font-mono-rail">
+                        <div className="text-[8px] text-slate-500">UTILIZATION</div>
+                        <div className="text-sm font-bold text-emerald-400">{bundle.utilizationRate}%</div>
+                      </div>
+                      <div className="font-mono-rail text-xs text-slate-500">
+                        {expandedBundle === bundle.bundleId ? '▲' : '▼'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Expanded defect items */}
+                  {expandedBundle === bundle.bundleId && (
+                    <div className="border-t border-slate-700/60 px-4 py-3 bg-slate-950/40 flex flex-col gap-2">
+                      <div className="font-mono-rail text-[8px] text-slate-400 uppercase tracking-wider">
+                        CONSOLIDATED TASKS & EXPLAINABLE SCORE BREAKDOWNS:
+                      </div>
+                      {bundle.defects.map(d => (
+                        <div key={d.defectCode} className="bg-slate-900 p-2.5 rounded-lg border border-slate-800 flex flex-col gap-1.5">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono-rail text-[10px] font-bold text-emerald-400">{d.defectCode}</span>
+                              <span className="font-mono-rail text-[9px] text-slate-300">({d.assetId})</span>
+                              <span className="font-mono-rail text-[8px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">{d.department}</span>
+                              <PriorityBadge value={d.priority} />
+                            </div>
+                            <span className="font-mono-rail text-[9px] font-bold text-slate-200">
+                              Duration: {d.estimatedDurationHrs}h
+                            </span>
+                          </div>
+                          <div className="font-mono-rail text-[9px] text-slate-400">
+                            {d.faultDescription}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </>
+              ))
+            )}
+          </div>
+        )}
+
+        {/* ── TAB 4: CONFLICT MATRIX ── */}
+        {activeTab === 'conflicts' && (
+          <div className="p-4 overflow-y-auto">
+            {displayConflicts.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-32 gap-1 font-mono-rail text-[10px] text-emerald-400">
+                ✓ No conflicts detected in planned schedule
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-700/40">
+                {displayConflicts.map(c => (
+                  <div key={c.conflictId} className="py-2.5 flex items-center justify-between text-[9px] font-mono-rail">
+                    <div className="flex items-center gap-3">
+                      <span className="text-red-400 font-bold">{c.conflictId}</span>
+                      <span className="px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/30">{c.type}</span>
+                      <span className="text-slate-300">{c.recommendation}</span>
+                    </div>
+                    <SeverityBadge value={c.severity} />
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         )}

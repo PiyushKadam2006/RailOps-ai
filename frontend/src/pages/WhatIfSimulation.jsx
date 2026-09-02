@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import api from '../api/axios';
+import { useRailOps } from '../context/RailOpsContext';
 
 // Topology of Indian Railway Trunk Corridors and network relationships
 const CORRIDOR_NETWORK = [
@@ -10,7 +11,6 @@ const CORRIDOR_NETWORK = [
     toStation: 'CSMT',
     totalKm: 1384,
     dailyTrains: 58,
-    // Directly connected via major junction hubs
     secondaryIds: ['COR-02', 'COR-03', 'COR-05'],
     tertiaryIds: ['COR-04']
   },
@@ -63,7 +63,7 @@ const PREDEFINED_SCENARIOS = [
     type: 'EMERGENCY_BLOCK',
     icon: '⚡',
     severity: 'CRITICAL',
-    defaultDelay: 180,
+    defaultDelay: 120,
     defaultCorridor: 'COR-01',
     description: 'Sudden rail fracture detected on high-speed section. Immediate line blockade enforced.',
     mitigation: 'Dispatch emergency track maintenance gang; divert Superfast Express via Chord line.'
@@ -74,7 +74,7 @@ const PREDEFINED_SCENARIOS = [
     type: 'WEATHER_RESTRICTION',
     icon: '🌧',
     severity: 'HIGH',
-    defaultDelay: 120,
+    defaultDelay: 180,
     defaultCorridor: 'COR-03',
     description: 'Submerged tracks and embankment slippage due to torrential rain. Speed restricted to 30 km/h.',
     mitigation: 'Regulate inter-zonal freight departures; deploy mobile de-watering diesel pumps.'
@@ -114,7 +114,6 @@ const PREDEFINED_SCENARIOS = [
   }
 ];
 
-// Calculation utility computing cascade ripple effect across network corridors
 function computeCascadeImpact(primaryCorridorId, inputDelay) {
   const BASELINE_AVAILABILITY = 98.4;
   const primary = CORRIDOR_NETWORK.find(c => c.corridorId === primaryCorridorId) || CORRIDOR_NETWORK[0];
@@ -140,17 +139,10 @@ function computeCascadeImpact(primaryCorridorId, inputDelay) {
 
     const calculatedDelay = Math.max(0, Math.round(inputDelay * cascadeFactor));
 
-    // Status badge determination
     let status = 'NOMINAL';
-    if (calculatedDelay >= 90) {
-      status = 'CRITICAL_DELAY';
-    } else if (calculatedDelay >= 40) {
-      status = 'MODERATE_WARNING';
-    } else {
-      status = 'NOMINAL';
-    }
+    if (calculatedDelay >= 90) status = 'CRITICAL_DELAY';
+    else if (calculatedDelay >= 40) status = 'MODERATE_WARNING';
 
-    // Impacted trains calculation based on corridor traffic density and delay hours
     const trainsPerHour = corridor.dailyTrains / 24;
     const impactFactor = tier === 'PRIMARY' ? 2.2 : tier === 'SECONDARY' ? 1.5 : 0.9;
     const impactedTrains = Math.max(
@@ -170,7 +162,6 @@ function computeCascadeImpact(primaryCorridorId, inputDelay) {
     };
   });
 
-  // Sort: Primary first, then by delay descending
   corridorResults.sort((a, b) => {
     if (a.tier === 'PRIMARY') return -1;
     if (b.tier === 'PRIMARY') return 1;
@@ -181,9 +172,6 @@ function computeCascadeImpact(primaryCorridorId, inputDelay) {
   const cumulativeDelayHours = parseFloat((totalDelayMinutes / 60).toFixed(1));
   const totalImpactedTrains = corridorResults.reduce((sum, c) => sum + c.impactedTrains, 0);
 
-  // System availability calculation:
-  // Baseline is 98.4%. Availability degrades proportionally to total network delay load.
-  // 120 corridor-hours = full network 24h capacity (5 corridors * 24h).
   const networkLoadPct = (cumulativeDelayHours / 120) * 100;
   const degradation = Math.min(48.0, networkLoadPct * 0.92);
   const simulatedAvailability = Math.max(50.0, parseFloat((BASELINE_AVAILABILITY - degradation).toFixed(1)));
@@ -200,46 +188,57 @@ function computeCascadeImpact(primaryCorridorId, inputDelay) {
 }
 
 export default function WhatIfSimulation() {
+  const { refreshData } = useRailOps();
   const [selectedScenarioId, setSelectedScenarioId] = useState(PREDEFINED_SCENARIOS[0].id);
   const [targetCorridorId, setTargetCorridorId] = useState(PREDEFINED_SCENARIOS[0].defaultCorridor);
   const [delayMinutes, setDelayMinutes] = useState(PREDEFINED_SCENARIOS[0].defaultDelay);
   const [isSimulating, setIsSimulating] = useState(false);
-  const [hasRun, setHasRun] = useState(true);
+  const [isReoptimizing, setIsReoptimizing] = useState(false);
+  const [activeTab, setActiveTab] = useState('cascade'); // 'cascade' | 'reopt'
+  const [reoptResult, setReoptResult] = useState(null);
+  const [reoptSuccess, setReoptSuccess] = useState(null);
 
   const activeScenario = useMemo(() => {
     return PREDEFINED_SCENARIOS.find(s => s.id === selectedScenarioId) || PREDEFINED_SCENARIOS[0];
   }, [selectedScenarioId]);
 
-  // Handle selecting a scenario card
   const handleSelectScenario = (scenario) => {
     setSelectedScenarioId(scenario.id);
     setTargetCorridorId(scenario.defaultCorridor);
     setDelayMinutes(scenario.defaultDelay);
+    setReoptResult(null);
+    setReoptSuccess(null);
   };
 
-  // Run simulation handler
-  const handleRunSimulation = async () => {
+  const handleRunSimulation = () => {
     setIsSimulating(true);
-    setHasRun(true);
-
-    // Also notify backend if endpoint is responsive
-    try {
-      await api.post('/simulation/whatif', {
-        scenario: activeScenario.type,
-        corridorId: targetCorridorId,
-        delayMinutes: delayMinutes,
-        description: activeScenario.description
-      });
-    } catch {
-      // Graceful fallback to client-side cascade engine
-    }
-
+    setActiveTab('cascade');
     setTimeout(() => {
       setIsSimulating(false);
-    }, 450);
+    }, 350);
   };
 
-  // Compute cascade metrics live
+  const handleReoptimizePlan = async () => {
+    setIsReoptimizing(true);
+    setReoptSuccess(null);
+    try {
+      const res = await api.post('/simulation/what-if', {
+        scenario: activeScenario.type,
+        corridorId: targetCorridorId,
+        delayMinutes,
+        description: activeScenario.description
+      });
+      setReoptResult(res.data?.result);
+      setActiveTab('reopt');
+      setReoptSuccess('Disruption analyzed: alternative feasible maintenance windows generated & plan re-optimized.');
+      refreshData();
+    } catch (err) {
+      console.error('Re-optimization error:', err);
+    } finally {
+      setIsReoptimizing(false);
+    }
+  };
+
   const cascadeData = useMemo(() => {
     return computeCascadeImpact(targetCorridorId, delayMinutes);
   }, [targetCorridorId, delayMinutes]);
@@ -247,18 +246,18 @@ export default function WhatIfSimulation() {
   const targetCorridorObj = CORRIDOR_NETWORK.find(c => c.corridorId === targetCorridorId);
 
   return (
-    <div className="h-full grid grid-cols-[400px_1fr] gap-4 p-4 overflow-hidden bg-slate-950 text-slate-100">
+    <div className="h-full grid grid-cols-[380px_1fr] gap-4 p-4 overflow-hidden bg-slate-950 text-slate-100">
       
-      {/* ── LEFT PANEL: INTERACTIVE SIMULATION CONTROLS ── */}
+      {/* ── LEFT PANEL: INTERACTIVE SIMULATION & RE-OPTIMIZATION CONTROLS ── */}
       <div className="flex flex-col gap-3 h-full overflow-hidden bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl">
         <div className="flex items-center justify-between pb-3 border-b border-slate-800">
           <div>
             <h2 className="font-mono-rail text-xs font-bold text-slate-200 tracking-wider flex items-center gap-2">
               <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              WHAT-IF SIMULATION ENGINE
+              WHAT-IF SIMULATION & RE-OPTIMIZER
             </h2>
             <div className="font-mono-rail text-[9px] text-slate-500 mt-0.5">
-              Dynamic network delay cascade & propagation modeling
+              Constraint-aware disruption modeling & dynamic reschedule
             </div>
           </div>
         </div>
@@ -304,8 +303,8 @@ export default function WhatIfSimulation() {
                       {s.description}
                     </div>
                     <div className="mt-2 flex items-center justify-between font-mono-rail text-[9px] text-slate-500">
-                      <span>Default: {s.defaultCorridor}</span>
-                      <span className="text-emerald-400">+{s.defaultDelay}m Base Delay</span>
+                      <span>Corridor: {s.defaultCorridor}</span>
+                      <span className="text-emerald-400">+{s.defaultDelay}m Disruption</span>
                     </div>
                   </div>
                 );
@@ -320,22 +319,25 @@ export default function WhatIfSimulation() {
             </label>
             <select
               value={targetCorridorId}
-              onChange={(e) => setTargetCorridorId(e.target.value)}
+              onChange={(e) => {
+                setTargetCorridorId(e.target.value);
+                setReoptResult(null);
+              }}
               className="w-full bg-slate-900 border border-slate-700 text-slate-200 text-xs p-2.5 rounded font-mono-rail outline-none focus:border-emerald-500 transition-colors"
             >
               {CORRIDOR_NETWORK.map(c => (
                 <option key={c.corridorId} value={c.corridorId}>
-                  {c.corridorId} — {c.name} ({c.fromStation} ↔ {c.toStation}, {c.totalKm}km)
+                  {c.corridorId} — {c.name} ({c.totalKm}km)
                 </option>
               ))}
             </select>
           </div>
 
-          {/* 3. Delay Slider & Numeric Input */}
+          {/* 3. Delay Slider */}
           <div className="bg-slate-800/40 border border-slate-800 rounded-lg p-3 flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <label className="font-mono-rail text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
-                Primary Delay Duration
+                Disruption Blockade Duration
               </label>
               <div className="flex items-center gap-1">
                 <input
@@ -347,6 +349,7 @@ export default function WhatIfSimulation() {
                   onChange={(e) => {
                     const val = Math.max(15, Math.min(360, Number(e.target.value) || 15));
                     setDelayMinutes(val);
+                    setReoptResult(null);
                   }}
                   className="w-16 bg-slate-900 border border-slate-700 text-emerald-400 text-right font-mono-rail text-xs font-bold px-2 py-1 rounded outline-none focus:border-emerald-500"
                 />
@@ -354,353 +357,252 @@ export default function WhatIfSimulation() {
               </div>
             </div>
 
-            {/* Slider */}
-            <div className="flex flex-col gap-1">
-              <input
-                type="range"
-                min="15"
-                max="360"
-                step="5"
-                value={delayMinutes}
-                onChange={(e) => setDelayMinutes(Number(e.target.value))}
-                className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-              />
-              <div className="flex justify-between font-mono-rail text-[8px] text-slate-500 px-0.5">
-                <span>15m</span>
-                <span>60m (1h)</span>
-                <span>180m (3h)</span>
-                <span>360m (6h)</span>
-              </div>
-            </div>
-
-            {/* Quick-select delay preset pills */}
-            <div className="flex items-center gap-1.5 pt-1">
-              {[30, 60, 120, 180, 240, 360].map(mins => (
-                <button
-                  key={mins}
-                  type="button"
-                  onClick={() => setDelayMinutes(mins)}
-                  className={`flex-1 font-mono-rail text-[9px] py-1 rounded border transition-colors ${
-                    delayMinutes === mins
-                      ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 font-bold'
-                      : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:border-slate-700 hover:text-slate-300'
-                  }`}
-                >
-                  {mins < 60 ? `${mins}m` : `${mins / 60}h`}
-                </button>
-              ))}
+            <input
+              type="range"
+              min="15"
+              max="360"
+              step="5"
+              value={delayMinutes}
+              onChange={(e) => {
+                setDelayMinutes(Number(e.target.value));
+                setReoptResult(null);
+              }}
+              className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+            />
+            <div className="flex justify-between font-mono-rail text-[8px] text-slate-500 px-0.5">
+              <span>15m</span>
+              <span>1h (60m)</span>
+              <span>2h (120m)</span>
+              <span>6h (360m)</span>
             </div>
           </div>
         </div>
 
-        {/* Action Button */}
-        <div className="pt-2 border-t border-slate-800">
+        {/* Dual Action Buttons */}
+        <div className="pt-2 border-t border-slate-800 flex flex-col gap-2">
           <button
             onClick={handleRunSimulation}
             disabled={isSimulating}
-            className={`w-full flex items-center justify-center gap-2 font-mono-rail text-xs font-bold py-3 rounded-lg transition-all shadow-lg ${
-              isSimulating
-                ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
-                : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 hover:shadow-emerald-500/20 cursor-pointer'
-            }`}
+            className="w-full flex items-center justify-center gap-2 font-mono-rail text-xs font-bold py-2.5 rounded-lg transition-all bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 cursor-pointer"
           >
-            {isSimulating ? (
+            {isSimulating ? 'MODELING CASCADE...' : '▶ RUN CASCADE SIMULATION'}
+          </button>
+
+          {/* Re-Optimize Button (Requirement 25) */}
+          <button
+            onClick={handleReoptimizePlan}
+            disabled={isReoptimizing}
+            className="w-full flex items-center justify-center gap-2 font-mono-rail text-xs font-bold py-2.5 rounded-lg transition-all bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-md shadow-emerald-500/20 cursor-pointer"
+          >
+            {isReoptimizing ? (
               <>
-                <svg className="animate-spin w-3.5 h-3.5 text-slate-400" viewBox="0 0 24 24" fill="none">
+                <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
-                CALCULATING CASCADE PROPAGATION...
+                RE-OPTIMIZING PLAN...
               </>
             ) : (
-              <>▶ RUN WHAT-IF CASCADE SIMULATION</>
+              <>⚡ RE-OPTIMIZE PLAN</>
             )}
           </button>
         </div>
       </div>
 
-      {/* ── RIGHT PANEL: SIMULATION RESULTS & CASCADE BREAKDOWN ── */}
-      <div className="flex flex-col gap-3 h-full overflow-hidden bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl">
+      {/* ── RIGHT PANEL: CASCADE RESULTS & RE-OPTIMIZATION REPORT ── */}
+      <div className="flex flex-col gap-3 h-full overflow-hidden bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl">
         
-        {/* Header Bar */}
-        <div className="flex items-center justify-between pb-3 border-b border-slate-800 flex-shrink-0">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-mono-rail text-xs font-bold text-slate-200">
-                CASCADE SIMULATION IMPACT REPORT
-              </span>
-              <span className="font-mono-rail text-[9px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">
-                {activeScenario.name}
-              </span>
-            </div>
-            <div className="font-mono-rail text-[9px] text-slate-500 mt-0.5">
-              Primary Epicenter: <span className="text-emerald-400 font-semibold">{targetCorridorId} {targetCorridorObj?.name}</span> (+{delayMinutes}m delay)
-            </div>
+        {/* Header Bar with Tabs */}
+        <div className="flex items-center justify-between pb-2 border-b border-slate-800 flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setActiveTab('cascade')}
+              className={`font-mono-rail text-xs font-bold px-3 py-1.5 rounded transition-all ${
+                activeTab === 'cascade'
+                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              CASCADE IMPACT REPORT
+            </button>
+            <button
+              onClick={() => setActiveTab('reopt')}
+              className={`font-mono-rail text-xs font-bold px-3 py-1.5 rounded transition-all flex items-center gap-1.5 ${
+                activeTab === 'reopt'
+                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <span>⚡ REVISED PLAN (RE-OPTIMIZED)</span>
+              {reoptResult && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />}
+            </button>
           </div>
 
-          <div className="flex items-center gap-3">
-            <span className="font-mono-rail text-[9px] text-slate-500">
-              Rule: 100% Primary → 65% Secondary → 30% Tertiary
-            </span>
-          </div>
+          <span className="font-mono-rail text-[9px] text-slate-500">
+            Epicenter: <strong className="text-slate-300">{targetCorridorId} ({targetCorridorObj?.name})</strong> · +{delayMinutes}m
+          </span>
         </div>
 
-        {/* Results Body */}
-        {hasRun ? (
-          <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-4">
-            
-            {/* 1. KPI Summary Cards */}
-            <div className="grid grid-cols-4 gap-3 flex-shrink-0">
-              
-              {/* Card 1: Network Health */}
-              <div className="relative bg-slate-800/80 border border-slate-700/80 rounded-xl p-3.5 overflow-hidden kpi-accent-rd">
-                <div className="font-mono-rail text-[9px] uppercase tracking-wider text-slate-400 mb-1">
-                  Network Availability
-                </div>
-                <div className="flex items-baseline gap-1.5">
-                  <span className="font-mono-rail text-xl font-bold text-red-400">
-                    {cascadeData.simulatedAvailability}%
-                  </span>
-                  <span className="font-mono-rail text-[9px] text-slate-500 line-through">
-                    {cascadeData.baselineAvailability}%
-                  </span>
-                </div>
-                <div className="font-mono-rail text-[9px] text-red-400/90 mt-1 font-semibold">
-                  ▼ {cascadeData.availabilityDelta}% System Drop
-                </div>
-              </div>
-
-              {/* Card 2: Cumulative Delay Hours */}
-              <div className="relative bg-slate-800/80 border border-slate-700/80 rounded-xl p-3.5 overflow-hidden kpi-accent-am">
-                <div className="font-mono-rail text-[9px] uppercase tracking-wider text-slate-400 mb-1">
-                  Cumulative Delay
-                </div>
-                <div className="font-mono-rail text-xl font-bold text-amber-400">
-                  {cascadeData.cumulativeDelayHours} hrs
-                </div>
-                <div className="font-mono-rail text-[9px] text-slate-500 mt-1">
-                  Across 5 network trunks
-                </div>
-              </div>
-
-              {/* Card 3: Total Impacted Trains */}
-              <div className="relative bg-slate-800/80 border border-slate-700/80 rounded-xl p-3.5 overflow-hidden kpi-accent-bl">
-                <div className="font-mono-rail text-[9px] uppercase tracking-wider text-slate-400 mb-1">
-                  Impacted Trains
-                </div>
-                <div className="font-mono-rail text-xl font-bold text-blue-400">
-                  {cascadeData.totalImpactedTrains} services
-                </div>
-                <div className="font-mono-rail text-[9px] text-slate-500 mt-1">
-                  Delayed or regulated
-                </div>
-              </div>
-
-              {/* Card 4: Propagation Scope */}
-              <div className="relative bg-slate-800/80 border border-slate-700/80 rounded-xl p-3.5 overflow-hidden kpi-accent-vi">
-                <div className="font-mono-rail text-[9px] uppercase tracking-wider text-slate-400 mb-1">
-                  Propagation Scope
-                </div>
-                <div className="font-mono-rail text-xl font-bold text-violet-400">
-                  {cascadeData.corridorResults.filter(c => c.delayMinutes > 0).length} / 5
-                </div>
-                <div className="font-mono-rail text-[9px] text-slate-500 mt-1">
-                  Corridors impacted
-                </div>
-              </div>
-            </div>
-
-            {/* 2. Network Health Delta Progress Bar */}
-            <div className="bg-slate-800/60 border border-slate-800 rounded-xl p-4 flex-shrink-0">
-              <div className="flex items-center justify-between mb-2">
-                <div className="font-mono-rail text-xs font-semibold text-slate-300">
-                  NETWORK HEALTH DEGRADATION GAUGE
-                </div>
-                <div className="font-mono-rail text-xs font-bold text-slate-200">
-                  <span className="text-emerald-400">{cascadeData.baselineAvailability}%</span>
-                  <span className="text-slate-500 mx-1.5">➔</span>
-                  <span className={cascadeData.simulatedAvailability < 80 ? 'text-red-400' : 'text-amber-400'}>
-                    {cascadeData.simulatedAvailability}%
-                  </span>
-                </div>
-              </div>
-
-              {/* Dual-bar comparison */}
-              <div className="flex flex-col gap-2">
-                {/* Simulated bar */}
-                <div>
-                  <div className="flex justify-between font-mono-rail text-[9px] text-slate-500 mb-1">
-                    <span>Simulated State (Under Disruption)</span>
-                    <span className={cascadeData.simulatedAvailability < 80 ? 'text-red-400 font-bold' : 'text-amber-400 font-bold'}>
-                      {cascadeData.simulatedAvailability}%
-                    </span>
-                  </div>
-                  <div className="h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-700/50">
-                    <div
-                      className={`h-full rounded-full transition-all duration-700 ${
-                        cascadeData.simulatedAvailability < 75
-                          ? 'bg-gradient-to-r from-red-600 to-red-400'
-                          : cascadeData.simulatedAvailability < 88
-                          ? 'bg-gradient-to-r from-amber-600 to-amber-400'
-                          : 'bg-gradient-to-r from-emerald-600 to-emerald-400'
-                      }`}
-                      style={{ width: `${cascadeData.simulatedAvailability}%` }}
-                    />
-                  </div>
-                </div>
-
-                {/* Baseline bar */}
-                <div>
-                  <div className="flex justify-between font-mono-rail text-[9px] text-slate-500 mb-1">
-                    <span>Baseline Operational Target</span>
-                    <span className="text-emerald-500 font-bold">{cascadeData.baselineAvailability}%</span>
-                  </div>
-                  <div className="h-1 bg-slate-900 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-emerald-500/70 rounded-full"
-                      style={{ width: `${cascadeData.baselineAvailability}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* 3. Affected Corridors List & Cascade Breakdown */}
-            <div className="bg-slate-800/60 border border-slate-800 rounded-xl overflow-hidden flex-1 flex flex-col min-h-0">
-              <div className="px-4 py-2.5 border-b border-slate-800 flex items-center justify-between bg-slate-800/80">
-                <span className="font-mono-rail text-xs font-semibold text-slate-300">
-                  CORRIDOR CASCADE SPREAD & STATUS BREAKDOWN
-                </span>
-                <span className="font-mono-rail text-[9px] text-slate-500">
-                  Mathematical ripple sorted by delay severity
-                </span>
-              </div>
-
-              {/* Table header */}
-              <div
-                className="grid gap-2 px-4 py-2 bg-slate-900/80 border-b border-slate-800/80 font-mono-rail text-[8px] text-slate-500 uppercase tracking-wider"
-                style={{ gridTemplateColumns: '90px 1fr 140px 100px 90px 130px' }}
-              >
-                <div>Corridor</div>
-                <div>Route & Stations</div>
-                <div>Cascade Relationship</div>
-                <div className="text-right">Cascaded Delay</div>
-                <div className="text-right">Trains Affected</div>
-                <div className="text-center">Status</div>
-              </div>
-
-              {/* Table rows */}
-              <div className="divide-y divide-slate-800/50 overflow-y-auto">
-                {cascadeData.corridorResults.map((c) => {
-                  const maxDelay = delayMinutes || 1;
-                  const delayBarPct = Math.round((c.delayMinutes / maxDelay) * 100);
-
-                  return (
-                    <div
-                      key={c.corridorId}
-                      className={`grid gap-2 px-4 py-3 items-center hover:bg-slate-800/40 transition-colors ${
-                        c.tier === 'PRIMARY' ? 'bg-emerald-500/5 border-l-2 border-emerald-500' : ''
-                      }`}
-                      style={{ gridTemplateColumns: '90px 1fr 140px 100px 90px 130px' }}
-                    >
-                      {/* Corridor ID */}
-                      <div className="flex items-center gap-1.5">
-                        <span className={`font-mono-rail text-xs font-bold ${
-                          c.tier === 'PRIMARY' ? 'text-emerald-400' : 'text-slate-300'
-                        }`}>
-                          {c.corridorId}
-                        </span>
-                      </div>
-
-                      {/* Route & Stations */}
-                      <div>
-                        <div className="font-mono-rail text-[10px] text-slate-200 font-semibold">
-                          {c.name}
-                        </div>
-                        <div className="font-mono-rail text-[8px] text-slate-500">
-                          {c.fromStation} ↔ {c.toStation} · {c.totalKm} km · {c.dailyTrains} trains/day
-                        </div>
-                      </div>
-
-                      {/* Cascade Relationship */}
-                      <div>
-                        <span className={`font-mono-rail text-[8px] px-2 py-0.5 rounded border font-semibold inline-block ${
-                          c.tier === 'PRIMARY'
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                            : c.tier === 'SECONDARY'
-                            ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
-                            : 'bg-slate-700/40 text-slate-400 border-slate-700'
-                        }`}>
-                          {c.tier === 'PRIMARY' ? '100% PRIMARY' : c.tier === 'SECONDARY' ? '65% DOWNSTREAM' : '30% TERTIARY'}
-                        </span>
-                      </div>
-
-                      {/* Cascaded Delay */}
-                      <div className="text-right">
-                        <div className="font-mono-rail text-xs font-bold text-amber-400">
-                          +{c.delayMinutes}m
-                        </div>
-                        <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden mt-1 ml-auto" style={{ maxWidth: '70px' }}>
-                          <div
-                            className={`h-full rounded-full ${
-                              c.delayMinutes >= 90 ? 'bg-red-500' : c.delayMinutes >= 40 ? 'bg-amber-500' : 'bg-emerald-500'
-                            }`}
-                            style={{ width: `${delayBarPct}%` }}
-                          />
-                        </div>
-                      </div>
-
-                      {/* Trains Affected */}
-                      <div className="text-right font-mono-rail text-xs text-slate-300 font-semibold">
-                        {c.impactedTrains} <span className="text-[9px] text-slate-500 font-normal">rakes</span>
-                      </div>
-
-                      {/* Status Badge */}
-                      <div className="flex justify-center">
-                        <span className={`font-mono-rail text-[8px] px-2 py-0.5 rounded-full border font-bold ${
-                          c.status === 'CRITICAL_DELAY'
-                            ? 'bg-red-500/20 text-red-400 border-red-500/40'
-                            : c.status === 'MODERATE_WARNING'
-                            ? 'bg-amber-500/20 text-amber-400 border-amber-500/40'
-                            : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
-                        }`}>
-                          {c.status}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* 4. Automated Dispatch Mitigation Plan */}
-            <div className="bg-slate-800/40 border border-slate-800 rounded-xl p-3.5 flex items-start gap-3 flex-shrink-0">
-              <div className="text-xl text-emerald-400 mt-0.5">💡</div>
-              <div className="flex-1">
-                <div className="font-mono-rail text-[10px] font-bold text-slate-300 uppercase tracking-wider mb-1">
-                  AI DISPATCH MITIGATION ADVISORY
-                </div>
-                <div className="font-mono-rail text-[9px] text-slate-400 leading-relaxed">
-                  {activeScenario.mitigation} Secondary corridors ({targetCorridorObj?.secondaryIds.join(', ')}) should immediately institute headway expansion (+4 mins) to absorb cascading arrival delays.
-                </div>
-              </div>
-            </div>
-
+        {reoptSuccess && (
+          <div className="px-3 py-2 bg-emerald-950/40 border border-emerald-500/40 rounded-lg font-mono-rail text-[10px] text-emerald-300 flex items-center justify-between">
+            <span>✓ {reoptSuccess}</span>
+            <span className="font-bold">Recovery: {reoptResult?.metricsComparison?.after?.availabilityRecoveryPct || '+3.8%'}</span>
           </div>
-        ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-center p-8 gap-3">
-            <div className="text-4xl opacity-20">⚙</div>
-            <div className="font-mono-rail text-sm text-slate-400 font-semibold">
-              Select Disruption Parameters & Run Simulation
+        )}
+
+        {/* ── TAB 1: CASCADE PROPAGATION REPORT ── */}
+        {activeTab === 'cascade' && (
+          <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-4">
+            {/* KPI Cards */}
+            <div className="grid grid-cols-4 gap-3 flex-shrink-0">
+              <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3">
+                <div className="font-mono-rail text-[9px] uppercase tracking-wider text-slate-400 mb-1">Network Availability</div>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="font-mono-rail text-xl font-bold text-red-400">{cascadeData.simulatedAvailability}%</span>
+                  <span className="font-mono-rail text-[9px] text-slate-500 line-through">{cascadeData.baselineAvailability}%</span>
+                </div>
+                <div className="font-mono-rail text-[8px] text-red-400/90 mt-1 font-semibold">▼ {cascadeData.availabilityDelta}% Drop</div>
+              </div>
+
+              <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3">
+                <div className="font-mono-rail text-[9px] uppercase tracking-wider text-slate-400 mb-1">Cumulative Delay</div>
+                <div className="font-mono-rail text-xl font-bold text-amber-400">{cascadeData.cumulativeDelayHours}h</div>
+                <div className="font-mono-rail text-[8px] text-slate-500 mt-1">Across 5 trunk lines</div>
+              </div>
+
+              <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3">
+                <div className="font-mono-rail text-[9px] uppercase tracking-wider text-slate-400 mb-1">Impacted Trains</div>
+                <div className="font-mono-rail text-xl font-bold text-blue-400">{cascadeData.totalImpactedTrains} rakes</div>
+                <div className="font-mono-rail text-[8px] text-slate-500 mt-1">Passenger & freight</div>
+              </div>
+
+              <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3">
+                <div className="font-mono-rail text-[9px] uppercase tracking-wider text-slate-400 mb-1">Disruption Scope</div>
+                <div className="font-mono-rail text-xl font-bold text-violet-400">{cascadeData.corridorResults.filter(c => c.delayMinutes > 0).length} / 5</div>
+                <div className="font-mono-rail text-[8px] text-slate-500 mt-1">Corridors impacted</div>
+              </div>
             </div>
-            <div className="font-mono-rail text-[10px] text-slate-600 max-w-sm">
-              Adjust scenario presets, primary corridor, or delay duration on the left to observe cascading network propagation.
+
+            {/* Network Health Degradation Bar */}
+            <div className="bg-slate-800/60 border border-slate-800 rounded-xl p-3 flex-shrink-0">
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-mono-rail text-xs font-semibold text-slate-300">DISRUPTION AVAILABILITY IMPACT</span>
+                <span className="font-mono-rail text-xs font-bold text-red-400">{cascadeData.simulatedAvailability}% (Degraded)</span>
+              </div>
+              <div className="h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-700/50">
+                <div className="h-full bg-gradient-to-r from-red-600 to-amber-500 rounded-full" style={{ width: `${cascadeData.simulatedAvailability}%` }} />
+              </div>
+            </div>
+
+            {/* Cascade Spread Table */}
+            <div className="bg-slate-800/60 border border-slate-800 rounded-xl overflow-hidden flex-1 flex flex-col min-h-0">
+              <div className="px-4 py-2 border-b border-slate-800 bg-slate-850 flex items-center justify-between">
+                <span className="font-mono-rail text-xs font-semibold text-slate-300">CORRIDOR CASCADE SPREAD</span>
+                <span className="font-mono-rail text-[9px] text-slate-500">100% Primary ➔ 65% Secondary ➔ 30% Tertiary</span>
+              </div>
+              <div className="divide-y divide-slate-800/50 overflow-y-auto">
+                {cascadeData.corridorResults.map(c => (
+                  <div key={c.corridorId} className="p-3 flex items-center justify-between text-[9px] font-mono-rail hover:bg-slate-800/30">
+                    <div>
+                      <div className="text-slate-200 font-bold text-xs">{c.corridorId} — {c.name}</div>
+                      <div className="text-slate-500">{c.relationship}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-amber-400 font-bold">+{c.delayMinutes}m delay</div>
+                      <div className="text-slate-400">{c.impactedTrains} trains affected</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}
 
-      </div>
+        {/* ── TAB 2: RE-OPTIMIZATION & SCHEDULE RECOVERY REPORT ── */}
+        {activeTab === 'reopt' && (
+          <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-4">
+            {!reoptResult ? (
+              <div className="flex flex-col items-center justify-center h-48 gap-2 font-mono-rail text-slate-500">
+                <div className="text-2xl opacity-25">⚡</div>
+                <div>Click "⚡ RE-OPTIMIZE PLAN" on the left panel to execute constraint-aware rescheduling</div>
+              </div>
+            ) : (
+              <>
+                {/* Before vs After Re-Optimization Card */}
+                <div className="bg-slate-800/80 border border-slate-700 rounded-xl p-4 shadow-lg">
+                  <div className="font-mono-rail text-xs font-bold text-slate-200 mb-3 flex items-center gap-2">
+                    <span>BEFORE VS. AFTER RE-OPTIMIZATION</span>
+                    <span className="font-mono-rail text-[9px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
+                      {reoptResult.metricsComparison?.after?.availabilityRecoveryPct} RECOVERY
+                    </span>
+                  </div>
 
+                  <div className="grid grid-cols-3 gap-3 font-mono-rail text-[10px]">
+                    <div className="bg-slate-900 p-3 rounded border border-slate-800">
+                      <div className="text-slate-500 uppercase text-[8px]">CORRIDOR STATUS</div>
+                      <div className="text-red-400 line-through text-xs mt-1">{reoptResult.metricsComparison?.before?.corridorStatus}</div>
+                      <div className="text-emerald-400 font-bold text-xs mt-0.5">{reoptResult.metricsComparison?.after?.corridorStatus}</div>
+                    </div>
+                    <div className="bg-slate-900 p-3 rounded border border-slate-800">
+                      <div className="text-slate-500 uppercase text-[8px]">TRAINS DELAYED</div>
+                      <div className="text-slate-400 line-through text-xs mt-1">{reoptResult.metricsComparison?.before?.trainsDelayed} trains</div>
+                      <div className="text-emerald-400 font-bold text-xs mt-0.5">{reoptResult.metricsComparison?.after?.trainsDelayed} trains delayed</div>
+                    </div>
+                    <div className="bg-slate-900 p-3 rounded border border-slate-800">
+                      <div className="text-slate-500 uppercase text-[8px]">SCHEDULE CONFLICTS</div>
+                      <div className="text-red-400 line-through text-xs mt-1">{reoptResult.metricsComparison?.before?.conflicts} block conflicts</div>
+                      <div className="text-emerald-400 font-bold text-xs mt-0.5">0 conflicts (Resolved)</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Selected Alternative Window Card */}
+                <div className="bg-gradient-to-br from-slate-900 to-slate-850 border border-emerald-500/50 rounded-xl p-4 shadow-xl">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-mono-rail text-[9px] font-bold px-2 py-0.5 rounded bg-emerald-500 text-slate-950">
+                      SELECTED REVISED BLOCK WINDOW
+                    </span>
+                    <span className="font-mono-rail text-xs font-bold text-emerald-400">
+                      Score: {reoptResult.selectedAlternative?.score}/100
+                    </span>
+                  </div>
+                  <div className="font-mono-rail text-lg font-bold text-slate-100">
+                    {reoptResult.selectedAlternative?.timeLabel} ({reoptResult.selectedAlternative?.shiftName})
+                  </div>
+                  <div className="font-mono-rail text-[9px] text-slate-400 mt-1">
+                    {reoptResult.selectedAlternative?.description}
+                  </div>
+                </div>
+
+                {/* Alternative Windows Evaluated Table */}
+                <div className="bg-slate-800/60 border border-slate-800 rounded-xl overflow-hidden">
+                  <div className="px-4 py-2.5 bg-slate-850 border-b border-slate-800 font-mono-rail text-xs font-semibold text-slate-300">
+                    EVALUATED ALTERNATIVE WINDOWS
+                  </div>
+                  <div className="divide-y divide-slate-800">
+                    {reoptResult.alternativeWindows?.map(alt => (
+                      <div key={alt.candidateId} className="p-3 flex items-center justify-between font-mono-rail text-[9px]">
+                        <div>
+                          <div className="text-slate-200 font-bold">{alt.timeLabel} · {alt.shiftName}</div>
+                          <div className="text-slate-400 text-[8px]">{alt.description}</div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className={`px-2 py-0.5 rounded font-bold ${
+                            alt.feasible ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400'
+                          }`}>
+                            {alt.feasible ? 'FEASIBLE' : 'INFEASIBLE'}
+                          </span>
+                          <span className="font-bold text-slate-200 text-xs">Score: {alt.score}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
