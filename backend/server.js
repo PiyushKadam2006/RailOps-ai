@@ -11,6 +11,7 @@ const corridorRoutes = require('./routes/corridors');
 const scheduleRoutes = require('./routes/schedules');
 const optimizationRoutes = require('./routes/optimization');
 const simulationRoutes = require('./routes/simulation');
+const integrationRoutes = require('./routes/integration');
 const { seedDatabase } = require('./seed/seed');
 const Defect = require('./models/Defect');
 
@@ -26,6 +27,7 @@ app.use('/api/corridors', corridorRoutes);
 app.use('/api/schedules', scheduleRoutes);
 app.use('/api/optimization', optimizationRoutes);
 app.use('/api/simulation', simulationRoutes);
+app.use('/api/integration', integrationRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'OK', timestamp: new Date() }));
 
