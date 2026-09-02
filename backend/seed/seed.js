@@ -151,7 +151,85 @@ const seedDatabase = async () => {
       conflictFlags
     });
   }
-  await Block.insertMany(blocksData);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const tomorrow = new Date(today); tomorrow.setDate(today.getDate()+1);
+
+  const CORRIDORS_IDS = ['COR-01','COR-02','COR-03','COR-04','COR-05'];
+  const BLOCK_STATUSES = ['active','maintenance','inspection','approved','proposed','completed'];
+
+  const todayBlocks = [];
+  for (let i = 0; i < 25; i++) {
+    const startHour = Math.floor(Math.random() * 20);
+    const durationHrs = Math.floor(Math.random() * 5) + 2;
+    const startTime = new Date(today);
+    startTime.setHours(startHour, Math.floor(Math.random()*60), 0, 0);
+    const endTime = new Date(startTime);
+    endTime.setHours(startTime.getHours() + durationHrs);
+
+    const hasConflict = Math.random() < 0.3;
+    todayBlocks.push({
+      blockCode: 'BLK-T-' + String(i+1).padStart(3,'0'),
+      assetId: faker.helpers.arrayElement(ASSETS),
+      corridorId: CORRIDORS_IDS[i % 5],
+      department: faker.helpers.arrayElement(DEPTS),
+      startTime,
+      endTime,
+      status: faker.helpers.arrayElement(BLOCK_STATUSES),
+      trainImpact: Math.floor(Math.random()*4),
+      conflictFlags: hasConflict ? (Math.random()>0.5 ? ['TRAIN_OVERLAP'] : ['DEPT_CONFLICT']) : [],
+      linkedDefectId: null
+    });
+  }
+
+  const tomorrowBlocks = [];
+  for (let i = 0; i < 15; i++) {
+    const startHour = Math.floor(Math.random() * 20);
+    const durationHrs = Math.floor(Math.random() * 5) + 2;
+    const startTime = new Date(tomorrow);
+    startTime.setHours(startHour, Math.floor(Math.random()*60), 0, 0);
+    const endTime = new Date(startTime);
+    endTime.setHours(startTime.getHours() + durationHrs);
+
+    tomorrowBlocks.push({
+      blockCode: 'BLK-TM-' + String(i+1).padStart(3,'0'),
+      assetId: faker.helpers.arrayElement(ASSETS),
+      corridorId: CORRIDORS_IDS[i % 5],
+      department: faker.helpers.arrayElement(DEPTS),
+      startTime,
+      endTime,
+      status: faker.helpers.arrayElement(BLOCK_STATUSES),
+      trainImpact: Math.floor(Math.random()*3),
+      conflictFlags: Math.random() < 0.2 ? ['TRAIN_OVERLAP'] : [],
+      linkedDefectId: null
+    });
+  }
+
+  const overlapA = {
+    blockCode: 'BLK-OVL-01',
+    assetId: 'LOCO-001',
+    corridorId: 'COR-01',
+    department: 'Traction',
+    startTime: (() => { const d=new Date(today); d.setHours(9,0,0,0); return d })(),
+    endTime:   (() => { const d=new Date(today); d.setHours(15,0,0,0); return d })(),
+    status: 'active',
+    trainImpact: 2,
+    conflictFlags: ['DEPT_CONFLICT'],
+    linkedDefectId: null
+  };
+  const overlapB = {
+    blockCode: 'BLK-OVL-02',
+    assetId: 'EMU-101',
+    corridorId: 'COR-01',
+    department: 'Signalling',
+    startTime: (() => { const d=new Date(today); d.setHours(11,0,0,0); return d })(),
+    endTime:   (() => { const d=new Date(today); d.setHours(17,0,0,0); return d })(),
+    status: 'approved',
+    trainImpact: 3,
+    conflictFlags: ['TRAIN_OVERLAP','DEPT_CONFLICT'],
+    linkedDefectId: null
+  };
+
+  await Block.insertMany([...blocksData, ...todayBlocks, ...tomorrowBlocks, overlapA, overlapB]);
 
   // Seed 50 Train Schedules
   const trainsData = [];

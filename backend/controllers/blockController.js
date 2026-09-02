@@ -42,3 +42,19 @@ exports.updateBlock = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+exports.getTodayTomorrow = async (req, res) => {
+  try {
+    const today = new Date(); 
+    today.setHours(0,0,0,0);
+    const dayAfterTomorrow = new Date(today);
+    dayAfterTomorrow.setDate(today.getDate() + 2);
+    const blocks = await Block.find({
+      startTime: { $gte: today },
+      endTime:   { $lte: dayAfterTomorrow }
+    }).sort({ startTime: 1 });
+    res.status(200).json(blocks);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
