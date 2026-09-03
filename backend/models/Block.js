@@ -5,6 +5,7 @@ const BlockSchema = new mongoose.Schema({
   assetId: { type: String, required: true },
   corridorId: { type: String, required: true },
   department: { type: String, required: true },
+  track: { type: String, default: 'UP Main' },
   startTime: { type: Date, required: true },
   endTime: { type: Date, required: true },
   status: { type: String, enum: ['PROPOSED', 'APPROVED', 'ACTIVE', 'COMPLETED', 'CANCELLED'], default: 'PROPOSED' },

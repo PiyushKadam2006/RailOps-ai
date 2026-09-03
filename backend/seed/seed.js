@@ -123,8 +123,10 @@ function generateTrainSchedules(todayDate) {
 
       schedules.push({
         trainNumber: t.trainNumber,
+        trainName: t.trainName,
         trainType: t.trainType,
         corridorId: t.corridorId,
+        track: t.track || (t.trainType === 'Goods' ? 'DN Main' : 'UP Main'),
         departureTime: dep,
         arrivalTime: arr,
         priority: t.priority,
@@ -243,29 +245,15 @@ const seedDatabase = async (force = false) => {
     const endTime = new Date(startTime.getTime() + (randomDurationHrs * 3600 * 1000));
     
     const bRand = Math.random();
-    let status;
-    if (bRand < 0.30) status = 'APPROVED';
-    else if (bRand < 0.55) status = 'ACTIVE';
-    else if (bRand < 0.80) status = 'COMPLETED';
-    else if (bRand < 0.95) status = 'PROPOSED';
-    else status = 'CANCELLED';
-
-    const hasConflict = Math.random() < 0.20;
-    const conflictFlags = hasConflict ? [faker.helpers.arrayElement(['TRAIN_OVERLAP', 'DEPT_CONFLICT'])] : [];
+    let status = bRand < 0.4 ? 'COMPLETED' : bRand < 0.7 ? 'APPROVED' : 'ACTIVE';
+    const isToday = startTime.toDateString() === today.toDateString();
+    const isTomorrowDate = startTime.toDateString() === tomorrow.toDateString();
+    if (isToday || isTomorrowDate) {
+      status = 'COMPLETED';
+    }
 
     let corridorId = faker.helpers.arrayElement(corridorIds);
-    // Keep COR-01 night slot (01:00-09:00) on today and tomorrow clear for golden demo scheduling & what-if re-optimization
-    const t0NightStart = new Date(today); t0NightStart.setHours(1, 0, 0, 0);
-    const t0NightEnd = new Date(today); t0NightEnd.setHours(9, 0, 0, 0);
-    const t1NightStart = new Date(tomorrow); t1NightStart.setHours(1, 0, 0, 0);
-    const t1NightEnd = new Date(tomorrow); t1NightEnd.setHours(9, 0, 0, 0);
-
-    const overlapsNightWindow = (startTime < t0NightEnd && endTime > t0NightStart) ||
-                                (startTime < t1NightEnd && endTime > t1NightStart);
-
-    if (corridorId === 'COR-01' && overlapsNightWindow) {
-      corridorId = 'COR-02';
-    }
+    const conflictFlags = Math.random() < 0.15 ? ['TRAIN_OVERLAP'] : [];
 
     blocksData.push({
       blockCode: 'BLK-' + String(i + 1).padStart(4, '0'),
@@ -283,35 +271,66 @@ const seedDatabase = async (force = false) => {
   const CORRIDORS_IDS = ['COR-01','COR-02','COR-03','COR-04','COR-05'];
   const BLOCK_STATUSES = ['ACTIVE', 'APPROVED', 'PROPOSED', 'COMPLETED'];
 
-  const todayBlocks = [];
-  for (let i = 0; i < 25; i++) {
-    const startHour = Math.floor(Math.random() * 20);
-    const durationHrs = Math.floor(Math.random() * 5) + 2;
-    const startTime = new Date(today);
-    startTime.setHours(startHour, Math.floor(Math.random()*60), 0, 0);
-    const endTime = new Date(startTime);
-    endTime.setHours(startTime.getHours() + durationHrs);
-
-    let corridorId = CORRIDORS_IDS[i % 5];
-    // Keep COR-01 01:00-09:00 clear for golden demo window
-    if (corridorId === 'COR-01' && startHour >= 1 && startHour <= 9) {
-      corridorId = 'COR-02';
+  const todayBlocks = [
+    // COR-02 (Delhi–Howrah): Morning track possession and afternoon signalling
+    {
+      blockCode: 'BLK-C2-01', assetId: 'TRK-201', corridorId: 'COR-02', department: 'Track', track: 'UP Main',
+      startTime: (() => { const d=new Date(today); d.setHours(5,0,0,0); return d })(),
+      endTime:   (() => { const d=new Date(today); d.setHours(8,30,0,0); return d })(),
+      status: 'ACTIVE', trainImpact: 1, conflictFlags: [], linkedDefectId: null
+    },
+    {
+      blockCode: 'BLK-C2-02', assetId: 'SIG-202', corridorId: 'COR-02', department: 'Signalling', track: 'DN Main',
+      startTime: (() => { const d=new Date(today); d.setHours(13,0,0,0); return d })(),
+      endTime:   (() => { const d=new Date(today); d.setHours(16,0,0,0); return d })(),
+      status: 'APPROVED', trainImpact: 1, conflictFlags: [], linkedDefectId: null
+    },
+    // COR-03 (Mumbai–Chennai): Morning traction and an operational conflict pair for multi-corridor demo
+    {
+      blockCode: 'BLK-C3-01', assetId: 'OHE-301', corridorId: 'COR-03', department: 'Traction', track: 'DN Main',
+      startTime: (() => { const d=new Date(today); d.setHours(6,0,0,0); return d })(),
+      endTime:   (() => { const d=new Date(today); d.setHours(9,30,0,0); return d })(),
+      status: 'APPROVED', trainImpact: 1, conflictFlags: [], linkedDefectId: null
+    },
+    {
+      blockCode: 'BLK-C3-02', assetId: 'TRK-302', corridorId: 'COR-03', department: 'Track', track: 'UP Main',
+      startTime: (() => { const d=new Date(today); d.setHours(14,0,0,0); return d })(),
+      endTime:   (() => { const d=new Date(today); d.setHours(17,30,0,0); return d })(),
+      status: 'ACTIVE', trainImpact: 2, conflictFlags: ['DEPT_CONFLICT'], linkedDefectId: null
+    },
+    {
+      blockCode: 'BLK-C3-03', assetId: 'SIG-303', corridorId: 'COR-03', department: 'Signalling', track: 'UP Main',
+      startTime: (() => { const d=new Date(today); d.setHours(15,30,0,0); return d })(),
+      endTime:   (() => { const d=new Date(today); d.setHours(19,0,0,0); return d })(),
+      status: 'APPROVED', trainImpact: 2, conflictFlags: ['DEPT_CONFLICT'], linkedDefectId: null
+    },
+    // COR-04 (Howrah–Chennai): Midday track and evening electrical
+    {
+      blockCode: 'BLK-C4-01', assetId: 'TRK-401', corridorId: 'COR-04', department: 'Track', track: 'UP Main',
+      startTime: (() => { const d=new Date(today); d.setHours(9,30,0,0); return d })(),
+      endTime:   (() => { const d=new Date(today); d.setHours(13,0,0,0); return d })(),
+      status: 'APPROVED', trainImpact: 1, conflictFlags: [], linkedDefectId: null
+    },
+    {
+      blockCode: 'BLK-C4-02', assetId: 'OHE-402', corridorId: 'COR-04', department: 'Traction', track: 'DN Main',
+      startTime: (() => { const d=new Date(today); d.setHours(17,0,0,0); return d })(),
+      endTime:   (() => { const d=new Date(today); d.setHours(20,30,0,0); return d })(),
+      status: 'APPROVED', trainImpact: 1, conflictFlags: [], linkedDefectId: null
+    },
+    // COR-05 (Delhi–Chennai): Morning traction on DN Main and afternoon track on UP Main
+    {
+      blockCode: 'BLK-C5-01', assetId: 'OHE-501', corridorId: 'COR-05', department: 'Traction', track: 'DN Main',
+      startTime: (() => { const d=new Date(today); d.setHours(6,30,0,0); return d })(),
+      endTime:   (() => { const d=new Date(today); d.setHours(10,0,0,0); return d })(),
+      status: 'ACTIVE', trainImpact: 1, conflictFlags: [], linkedDefectId: null
+    },
+    {
+      blockCode: 'BLK-C5-02', assetId: 'TRK-502', corridorId: 'COR-05', department: 'Track', track: 'UP Main',
+      startTime: (() => { const d=new Date(today); d.setHours(14,30,0,0); return d })(),
+      endTime:   (() => { const d=new Date(today); d.setHours(18,0,0,0); return d })(),
+      status: 'APPROVED', trainImpact: 1, conflictFlags: [], linkedDefectId: null
     }
-
-    const hasConflict = Math.random() < 0.3;
-    todayBlocks.push({
-      blockCode: 'BLK-T-' + String(i+1).padStart(3,'0'),
-      assetId: faker.helpers.arrayElement(ASSETS),
-      corridorId,
-      department: faker.helpers.arrayElement(DEPTS),
-      startTime,
-      endTime,
-      status: faker.helpers.arrayElement(BLOCK_STATUSES),
-      trainImpact: Math.floor(Math.random()*4),
-      conflictFlags: hasConflict ? (Math.random()>0.5 ? ['TRAIN_OVERLAP'] : ['DEPT_CONFLICT']) : [],
-      linkedDefectId: null
-    });
-  }
+  ];
 
   const tomorrowBlocks = [];
   for (let i = 0; i < 15; i++) {
@@ -348,6 +367,7 @@ const seedDatabase = async (force = false) => {
     assetId: 'LOCO-001',
     corridorId: 'COR-01',
     department: 'Traction',
+    track: 'UP Main',
     startTime: (() => { const d=new Date(today); d.setHours(9,0,0,0); return d })(),
     endTime:   (() => { const d=new Date(today); d.setHours(15,0,0,0); return d })(),
     status: 'ACTIVE',
@@ -360,6 +380,7 @@ const seedDatabase = async (force = false) => {
     assetId: 'EMU-101',
     corridorId: 'COR-01',
     department: 'Signalling',
+    track: 'UP Main',
     startTime: (() => { const d=new Date(today); d.setHours(11,0,0,0); return d })(),
     endTime:   (() => { const d=new Date(today); d.setHours(17,0,0,0); return d })(),
     status: 'APPROVED',
@@ -367,8 +388,21 @@ const seedDatabase = async (force = false) => {
     conflictFlags: ['TRAIN_OVERLAP','DEPT_CONFLICT'],
     linkedDefectId: null
   };
+  const cleanEveningBlock = {
+    blockCode: 'BLK-COR1-03',
+    assetId: 'TRK-201',
+    corridorId: 'COR-01',
+    department: 'Track',
+    track: 'DN Main',
+    startTime: (() => { const d=new Date(today); d.setHours(19,0,0,0); return d })(),
+    endTime:   (() => { const d=new Date(today); d.setHours(21,30,0,0); return d })(),
+    status: 'APPROVED',
+    trainImpact: 1,
+    conflictFlags: [],
+    linkedDefectId: null
+  };
 
-  await Block.insertMany([...blocksData, ...todayBlocks, ...tomorrowBlocks, overlapA, overlapB]);
+  await Block.insertMany([...blocksData, ...todayBlocks, ...tomorrowBlocks, overlapA, overlapB, cleanEveningBlock]);
   console.log('Database seeded successfully with deterministic datasets!');
 };
 
