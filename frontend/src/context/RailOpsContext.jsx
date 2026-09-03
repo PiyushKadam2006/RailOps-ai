@@ -115,6 +115,41 @@ export function RailOpsProvider({ children }) {
     }
   }, [refreshData]);
 
+  // Apply a re-optimized plan from What-If simulation with fresh validateBeforeCommit() revalidation
+  const handleApplyReoptimizedPlan = useCallback(async (planPayload) => {
+    try {
+      const res = await api.post('/simulation/apply', planPayload);
+      const data = res.data;
+
+      if (data.success && data.status === 'COMMITTED') {
+        setActivityFeed(prev => [{
+          id: Date.now(),
+          action: 'APPROVED',
+          defectCode: 'RE-OPT COMMITTED',
+          assetId: data.updatedBlock?.assetId || 'CORRIDOR-BLOCK',
+          blockCode: data.updatedBlock?.blockCode || 'BLK-REOPT',
+          timestamp: new Date()
+        }, ...prev].slice(0, 15));
+
+        await refreshData();
+        return { success: true, status: 'COMMITTED', ...data };
+      }
+      return data;
+    } catch (err) {
+      if (err.response?.status === 409 && err.response?.data?.status === 'STALE') {
+        return {
+          success: false,
+          status: 'STALE',
+          message: err.response.data.message || 'Re-optimized window is no longer available. AI has calculated the next safe alternative.',
+          newAlternative: err.response.data.newAlternative,
+          violations: err.response.data.violations
+        };
+      }
+      console.error('RailOpsContext: handleApplyReoptimizedPlan failed:', err);
+      throw err;
+    }
+  }, [refreshData]);
+
   // Approve a defect: sends PUT /api/defects/:id with status EXECUTED, adds generated block, mutates state instantly
   const handleApproveDefect = useCallback(async (defectId) => {
     try {
@@ -214,6 +249,7 @@ export function RailOpsProvider({ children }) {
     refreshData,
     handleAcceptRecommendation,
     handleRejectRecommendation,
+    handleApplyReoptimizedPlan,
     handleApproveDefect,
     handleRejectDefect,
     handleBundleDefect,

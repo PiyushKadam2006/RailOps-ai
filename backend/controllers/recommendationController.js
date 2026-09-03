@@ -155,7 +155,7 @@ exports.getActiveRecommendation = async (req, res) => {
 
     const bestCandidate = feasibleCandidates[0];
     const bundle = bestCandidate.bundle;
-    const recId = `REC-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(Math.floor(Math.random() * 900) + 100)}`;
+    const recId = `REC-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString().slice(-4)}${String(Math.floor(Math.random() * 900) + 100)}`;
 
     const newRecommendation = new Recommendation({
       recommendationId: recId,
@@ -255,7 +255,7 @@ exports.acceptRecommendation = async (req, res) => {
       if (feasibleCandidates.length > 0) {
         const nextBest = feasibleCandidates[0];
         const nBundle = nextBest.bundle;
-        const nRecId = `REC-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(Math.floor(Math.random() * 900) + 100)}`;
+        const nRecId = `REC-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString().slice(-4)}${String(Math.floor(Math.random() * 900) + 100)}`;
 
         newRec = new Recommendation({
           recommendationId: nRecId,

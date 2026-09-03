@@ -380,3 +380,6 @@ exports.getConflicts = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+exports.detectConflictMatrix = detectConflictMatrix;
+

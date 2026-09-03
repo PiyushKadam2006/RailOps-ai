@@ -341,12 +341,20 @@ export default function Dashboard() {
                   <div className="font-mono-rail text-[9px] text-slate-300 leading-snug">
                     {c.blockA?.id} ({c.blockA?.department}) vs {c.blockB?.id} ({c.blockB?.department})
                   </div>
-                  <button
-                    onClick={() => setActiveConflict(c.blockB || c.blockA)}
-                    className="self-end mt-1 text-[8px] font-mono-rail font-bold bg-red-500/20 hover:bg-red-500/40 text-red-300 border border-red-500/40 px-2 py-0.5 rounded cursor-pointer transition-colors"
-                  >
-                    RESOLVE CONFLICT →
-                  </button>
+                  <div className="flex items-center justify-end gap-1.5 mt-1">
+                    <button
+                      onClick={() => setActiveConflict(c)}
+                      className="text-[8px] font-mono-rail text-slate-400 hover:text-slate-200 px-1.5 py-0.5 rounded border border-slate-800 hover:bg-slate-800/60 cursor-pointer transition-colors"
+                    >
+                      Details
+                    </button>
+                    <button
+                      onClick={() => navigate('/simulation', { state: { conflict: c } })}
+                      className="text-[8px] font-mono-rail font-bold bg-red-500/20 hover:bg-red-500/40 text-red-300 border border-red-500/40 px-2 py-0.5 rounded cursor-pointer transition-colors"
+                    >
+                      RESOLVE CONFLICT →
+                    </button>
+                  </div>
                 </div>
               ))
             )}
@@ -813,8 +821,9 @@ export default function Dashboard() {
                 </button>
                 <button
                   onClick={() => {
+                    const conflictContext = activeConflict;
                     setActiveConflict(null);
-                    navigate('/simulation');
+                    navigate('/simulation', { state: { conflict: conflictContext } });
                   }}
                   className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-mono-rail font-bold text-xs py-2 px-4 rounded-lg flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 cursor-pointer transition-all"
                 >

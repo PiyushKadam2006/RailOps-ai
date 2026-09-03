@@ -5,6 +5,8 @@ const simulationController = require('../controllers/simulationController');
 router.post('/whatif', simulationController.runWhatIf);
 router.post('/what-if', simulationController.runWhatIf);
 router.post('/reoptimize', simulationController.runWhatIf);
+router.post('/conflict', simulationController.simulateConflict);
+router.post('/apply', simulationController.applyReoptimization);
 router.get('/scenarios', simulationController.getScenarios);
 
 module.exports = router;
