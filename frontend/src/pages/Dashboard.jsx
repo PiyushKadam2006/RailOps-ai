@@ -27,10 +27,13 @@ export default function Dashboard() {
     schedules,
     isLoading: loading,
     activityFeed,
+    activeRecommendation,
     refreshData,
     handleApproveDefect,
     handleRejectDefect,
     handleRescheduleBlock,
+    handleAcceptRecommendation,
+    handleRejectRecommendation,
   } = useRailOps();
 
   const [selectedCorridor, setSelectedCorridor] = useState('COR-01'); // Default: COR-01 Delhi -> Mumbai
@@ -152,42 +155,51 @@ export default function Dashboard() {
     }
   };
 
-  // 1-Click Commit of Golden Demo AI Recommended Block
-  const handleCommitAiBlock = async () => {
+  // Reactive Accept of AI Recommended Block with fresh pre-commit revalidation
+  const handleAcceptAi = async () => {
+    if (!activeRecommendation) return;
     try {
       setAiCommitLoading(true);
-      const startTime = new Date(targetDate);
-      startTime.setHours(2, 0, 0, 0);
-      const endTime = new Date(targetDate);
-      endTime.setHours(8, 0, 0, 0);
-
-      const targetDefects = defects.filter(
-        (d) => ['DEF-0101', 'DEF-0102', 'DEF-0103'].includes(d.defectCode) || d.corridorId === 'COR-01'
-      );
-
-      const res = await api.post('/optimization/approve', {
-        planId: `PLAN-${new Date().toISOString().slice(0, 10)}-01`,
-        corridorId: 'COR-01',
-        blockCode: 'BLK-COORD-01',
-        startTime,
-        endTime,
-        department: 'Track + Signalling + Traction',
-        defects: targetDefects,
-        compositeScore: 78,
-      });
-
-      if (res.data?.success) {
+      const result = await handleAcceptRecommendation(activeRecommendation._id);
+      if (result.success && result.status === 'SCHEDULED') {
         setToast({
           visible: true,
-          message: '✓ Coordinated Block BLK-COORD-01 committed to live schedule!',
+          message: `✓ Coordinated Block ${result.block?.blockCode} validated & committed to live schedule!`,
           type: 'success',
         });
-        await refreshData();
+      } else if (result.status === 'REPLANNED') {
+        setToast({
+          visible: true,
+          message: `⚠ Window no longer available (${result.reason || 'schedule collision'}). AI automatically replanned to next safe window!`,
+          type: 'info',
+        });
       }
     } catch (err) {
       setToast({
         visible: true,
-        message: `Commit failed: ${err.response?.data?.error || err.message}`,
+        message: `Accept failed: ${err.response?.data?.error || err.message}`,
+        type: 'error',
+      });
+    } finally {
+      setAiCommitLoading(false);
+    }
+  };
+
+  // Reject recommendation
+  const handleRejectAi = async () => {
+    if (!activeRecommendation) return;
+    try {
+      setAiCommitLoading(true);
+      await handleRejectRecommendation(activeRecommendation._id, 'Operator rejected from Dashboard');
+      setToast({
+        visible: true,
+        message: 'Recommendation rejected and preserved in operations audit ledger.',
+        type: 'info',
+      });
+    } catch (err) {
+      setToast({
+        visible: true,
+        message: `Reject failed: ${err.response?.data?.error || err.message}`,
         type: 'error',
       });
     } finally {
@@ -558,70 +570,104 @@ export default function Dashboard() {
           ══════════════════════════════════════════════════════════════ */}
       <div className="flex flex-col gap-2.5 h-full overflow-hidden">
         
-        {/* 🤖 AI RECOMMENDED BLOCK CARD (COR-01 GOLDEN DEMO) */}
+        {/* 🤖 DYNAMIC AI RECOMMENDED BLOCK CARD */}
         <div className="bg-slate-900/90 border-2 border-emerald-500/60 rounded-xl p-3 shadow-xl flex flex-col gap-2 flex-shrink-0">
           <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
             <div className="flex items-center gap-1.5">
               <span className="text-base">🤖</span>
               <span className="font-mono-rail text-xs font-bold text-emerald-400">
-                AI RECOMMENDED BLOCK
+                AI COORDINATED RECOMMENDATION
               </span>
             </div>
             <span className="font-mono-rail text-[7.5px] bg-emerald-500 text-slate-950 px-1.5 py-0.2 rounded font-black">
-              OPTIMIZED
+              {activeRecommendation ? 'PROPOSED' : 'ALL CLEAR'}
             </span>
           </div>
 
-          <div className="bg-slate-950 border border-slate-800 rounded-lg p-2.5 flex flex-col gap-1 font-mono-rail text-[9.5px]">
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400">Target Corridor:</span>
-              <span className="text-slate-100 font-bold">COR-01 (Delhi → Mumbai)</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400">Optimal Window:</span>
-              <span className="text-emerald-400 font-bold">02:00 – 08:00 (6.0h)</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400">Candidate Shift:</span>
-              <span className="text-slate-200">CAND-02 (Golden Window)</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400">AI Composite Score:</span>
-              <span className="text-emerald-400 font-bold">78 / 100 (FEASIBLE)</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400">Consolidated Depts:</span>
-              <span className="text-slate-200 font-bold">Track + Signal + Traction</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400">Bundled Tasks:</span>
-              <span className="text-slate-300">DEF-0101, DEF-0102, DEF-0103</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400">Express Delay:</span>
-              <span className="text-emerald-400 font-bold">0 Express Delays</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400">Downtime Saved:</span>
-              <span className="text-amber-400 font-bold">5.0 Hours Saved</span>
-            </div>
-          </div>
+          {activeRecommendation ? (
+            <>
+              <div className="bg-slate-950 border border-slate-800 rounded-lg p-2.5 flex flex-col gap-1 font-mono-rail text-[9.5px]">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Target Corridor:</span>
+                  <span className="text-slate-100 font-bold">{activeRecommendation.corridorId}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Optimal Window:</span>
+                  <span className="text-emerald-400 font-bold">
+                    {new Date(activeRecommendation.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })} – {new Date(activeRecommendation.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })} ({(activeRecommendation.durationMinutes / 60).toFixed(1)}h)
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">AI Composite Score:</span>
+                  <span className="text-emerald-400 font-bold">{activeRecommendation.score} / 100 (FEASIBLE)</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Consolidated Depts:</span>
+                  <span className="text-slate-200 font-bold">{activeRecommendation.departments?.join(' + ')}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Bundled Tasks:</span>
+                  <span className="text-slate-300 truncate max-w-[150px]">
+                    {activeRecommendation.taskSummary?.map((t) => t.defectCode).join(', ') || 'Consolidated Work'}
+                  </span>
+                </div>
 
-          <div className="flex flex-col gap-1.5">
-            <button
-              onClick={handleCommitAiBlock}
-              disabled={aiCommitLoading}
-              className="w-full py-1.5 px-3 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-mono-rail font-bold text-[11px] shadow transition-all flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50"
-            >
-              {aiCommitLoading ? 'COMMITTING TO SCHEDULE...' : '✓ APPROVE & COMMIT BLOCK'}
-            </button>
-            <button
-              onClick={() => navigate('/optimization')}
-              className="w-full py-1 px-3 rounded-lg bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 font-mono-rail text-[9px] transition-colors cursor-pointer text-center"
-            >
-              OPEN OPTIMIZATION ENGINE →
-            </button>
-          </div>
+                {/* Explainability Reasons Checklist */}
+                <div className="border-t border-slate-800/80 pt-1.5 mt-0.5 flex flex-col gap-0.5">
+                  <span className="text-[8px] uppercase tracking-wider text-slate-500 font-bold">
+                    Why this window?
+                  </span>
+                  {activeRecommendation.reasons?.slice(0, 3).map((reason, idx) => (
+                    <div key={idx} className="flex items-start gap-1 text-[8.5px] text-slate-300">
+                      <span className="text-emerald-400 font-bold flex-shrink-0">✓</span>
+                      <span className="truncate">{reason}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <button
+                  onClick={handleAcceptAi}
+                  disabled={aiCommitLoading}
+                  className="w-full py-1.5 px-3 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-mono-rail font-bold text-[11px] shadow transition-all flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50"
+                >
+                  {aiCommitLoading ? 'VALIDATING & COMMITTING...' : '✓ ACCEPT & COMMIT BLOCK'}
+                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={handleRejectAi}
+                    disabled={aiCommitLoading}
+                    className="flex-1 py-1 px-2 rounded-lg bg-slate-950 hover:bg-slate-800 text-red-400 border border-slate-800 hover:border-red-500/40 font-mono-rail text-[9px] transition-colors cursor-pointer text-center disabled:opacity-50"
+                  >
+                    ✕ REJECT
+                  </button>
+                  <button
+                    onClick={() => navigate('/optimization')}
+                    className="flex-1 py-1 px-2 rounded-lg bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 font-mono-rail text-[9px] transition-colors cursor-pointer text-center"
+                  >
+                    OPTIMIZER →
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-4 px-2 gap-2 text-center bg-slate-950 rounded-lg border border-slate-800">
+              <div className="text-emerald-400 text-lg">✓</div>
+              <div className="font-mono-rail text-[10px] text-slate-200 font-bold">
+                ALL CORRIDORS FULLY COORDINATED
+              </div>
+              <div className="font-mono-rail text-[8px] text-slate-500 max-w-[200px]">
+                No pending proposals. Train movements, safety buffers, and maintenance possessions are fully clear.
+              </div>
+              <button
+                onClick={() => navigate('/optimization')}
+                className="mt-1 py-1 px-2.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-mono-rail text-[9px] hover:bg-emerald-500/30 transition-colors cursor-pointer"
+              >
+                OPEN OPTIMIZATION ENGINE →
+              </button>
+            </div>
+          )}
         </div>
 
         {/* QUICK DEFECT APPROVAL DRAWER */}

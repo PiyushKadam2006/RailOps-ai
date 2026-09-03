@@ -13,8 +13,11 @@ const BlockSchema = new mongoose.Schema({
   conflictFlags: [{ type: String }],
   trainImpact: { type: Number, default: 0 },
   linkedDefectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Defect', default: null },
+  linkedRecommendationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Recommendation', default: null },
+  safetyBufferMinutes: { type: Number, default: 20 },
+  source: { type: String, enum: ['MANUAL', 'AI_OPTIMIZED', 'HISTORICAL'], default: 'AI_OPTIMIZED' },
+  workZone: { type: String, default: 'Zone-A' },
   createdAt: { type: Date, default: Date.now }
 });
 
 module.exports = mongoose.model('Block', BlockSchema);
-//

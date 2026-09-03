@@ -1,11 +1,12 @@
 // Multi-Department Block Bundler for Indian Railways Maintenance Planning
 // Consolidates compatible Track, Signalling, and Traction tasks into coordinated corridor blocks
+// Supports splittable tasks (isSplittable) and carry-forward accounting
 
 /**
  * Builds multi-department and single-department task bundles from a list of defects
  * 
  * @param {Array} defects Array of pending defect objects
- * @returns {Array} Array of intelligent bundle objects
+ * @returns {Array} Array of intelligent bundle objects sorted by priority & bundling efficiency
  */
 function bundleDefects(defects) {
   // 1. Group defects by corridor
@@ -25,54 +26,48 @@ function bundleDefects(defects) {
 
     // Check for multi-department compatibility on this corridor
     const deptsPresent = Array.from(new Set(items.map(d => d.department)));
-    const hasTrack = deptsPresent.includes('Track');
-    const hasSig = deptsPresent.includes('Signalling');
-    const hasTrac = deptsPresent.includes('Traction');
 
-    // If multi-department tasks exist (especially Golden Demo Track + Signalling + Traction)
+    // If at least 2 distinct compatible departments exist
     if (items.length >= 2 && deptsPresent.length >= 2) {
       // Pick up to 3 compatible defects across different departments
       const multiDeptDefects = [];
       const usedDepts = new Set();
 
-      // Prioritize Golden Demo defects if present (Track, Signalling, Traction)
+      // Check if Golden Demo defects (DEF-0101, DEF-0102, DEF-0103) are on this corridor
       const goldenItems = items.filter(d => ['DEF-0101', 'DEF-0102', 'DEF-0103'].includes(d.defectCode));
-      if (goldenItems.length === 3) {
+      if (goldenItems.length >= 2) {
         goldenItems.forEach(gd => {
           multiDeptDefects.push(gd);
           usedDepts.add(gd.department);
         });
-      } else {
-        if (goldenItems.length > 0) {
-          goldenItems.forEach(gd => {
-            multiDeptDefects.push(gd);
-            usedDepts.add(gd.department);
-          });
-        }
-        items.forEach(d => {
-          if (multiDeptDefects.length < 3 && !usedDepts.has(d.department)) {
-            multiDeptDefects.push(d);
-            usedDepts.add(d.department);
-          }
-        });
       }
+
+      // Add other compatible tasks
+      items.forEach(d => {
+        if (multiDeptDefects.length < 3 && !usedDepts.has(d.department)) {
+          multiDeptDefects.push(d);
+          usedDepts.add(d.department);
+        }
+      });
 
       // Calculate separate vs bundled execution metrics
       const PROTECTION_BUFFER_SEPARATE = 1.0; // 1.0 hr setup/protection per separate block
-      const PROTECTION_BUFFER_SHARED   = 2.0; // 2.0 hr shared protection for coordinated block (1h setup + 1h clearance)
+      const PROTECTION_BUFFER_SHARED   = 1.5; // 1.5 hr shared protection for coordinated block
 
       const separateDurationHrs = multiDeptDefects.reduce(
-        (sum, d) => sum + (d.estimatedDurationHrs || 2) + PROTECTION_BUFFER_SEPARATE,
+        (sum, d) => sum + (d.estimatedDurationHrs || d.durationHours || 2) + PROTECTION_BUFFER_SEPARATE,
         0
       );
 
       // Max single task + shared protection
-      const maxSingleTaskHrs = Math.max(...multiDeptDefects.map(d => d.estimatedDurationHrs || 2));
-      const bundledDurationHrs = Math.min(8.0, Math.round(maxSingleTaskHrs + PROTECTION_BUFFER_SHARED));
+      const maxSingleTaskHrs = Math.max(...multiDeptDefects.map(d => d.estimatedDurationHrs || d.durationHours || 2));
+      const bundledDurationHrs = Math.min(8.0, parseFloat((maxSingleTaskHrs + PROTECTION_BUFFER_SHARED).toFixed(1)));
 
-      const rawWorkHours = multiDeptDefects.reduce((sum, d) => sum + (d.estimatedDurationHrs || 2), 0);
+      const rawWorkHours = multiDeptDefects.reduce((sum, d) => sum + (d.estimatedDurationHrs || d.durationHours || 2), 0);
       const timeSavedHrs = parseFloat(Math.max(0, separateDurationHrs - bundledDurationHrs).toFixed(1));
       const utilizationRate = Math.min(100, Math.round((rawWorkHours / bundledDurationHrs) * 100));
+
+      const hasSplittable = multiDeptDefects.some(d => d.isSplittable);
 
       bundles.push({
         bundleId: `BNDL-MULTI-${String(bundleIndex++).padStart(3, '0')}`,
@@ -81,6 +76,7 @@ function bundleDefects(defects) {
         departmentsList: Array.from(usedDepts),
         defectCount: multiDeptDefects.length,
         isMultiDepartment: true,
+        hasSplittable,
         badgeText: `${usedDepts.size} departmental tasks consolidated into 1 corridor block`,
         defects: multiDeptDefects.map(d => ({
           _id: d._id,
@@ -89,7 +85,9 @@ function bundleDefects(defects) {
           department: d.department,
           priority: d.priority,
           score: d.priorityScore || d._score || 85,
-          estimatedDurationHrs: d.estimatedDurationHrs || 2,
+          estimatedDurationHrs: d.estimatedDurationHrs || d.durationHours || 2,
+          isSplittable: Boolean(d.isSplittable),
+          workZone: d.workZone || 'Zone-A',
           faultDescription: d.faultDescription
         })),
         rawWorkHours,
@@ -98,48 +96,49 @@ function bundleDefects(defects) {
         timeSavedHrs,
         utilizationRate,
         efficiencyGainPct: Math.round((timeSavedHrs / separateDurationHrs) * 100),
-        reasoning: 'Track, Signalling, and Traction coordinated concurrently under shared corridor possession.'
+        reasoning: 'Compatible Track, Signalling and Traction work has been consolidated into one possession to reduce repeated corridor occupation.'
       });
 
-      // Remove bundled items from corridor items to avoid duplicate single bundling
+      // Package remaining single items
       const bundledIds = new Set(multiDeptDefects.map(d => d._id?.toString()));
       const remainingItems = items.filter(d => !bundledIds.has(d._id?.toString()));
 
-      // Package remaining single/same-department items
-      if (remainingItems.length > 0) {
-        remainingItems.slice(0, 3).forEach(d => {
-          bundles.push({
-            bundleId: `BNDL-SNGL-${String(bundleIndex++).padStart(3, '0')}`,
-            corridorId,
+      remainingItems.slice(0, 3).forEach(d => {
+        const dDur = d.estimatedDurationHrs || d.durationHours || 2;
+        bundles.push({
+          bundleId: `BNDL-SNGL-${String(bundleIndex++).padStart(3, '0')}`,
+          corridorId,
+          department: d.department,
+          departmentsList: [d.department],
+          defectCount: 1,
+          isMultiDepartment: false,
+          hasSplittable: Boolean(d.isSplittable),
+          badgeText: 'Single Department Task',
+          defects: [{
+            _id: d._id,
+            defectCode: d.defectCode || d._id,
+            assetId: d.assetId,
             department: d.department,
-            departmentsList: [d.department],
-            defectCount: 1,
-            isMultiDepartment: false,
-            badgeText: 'Single Department Task',
-            defects: [{
-              _id: d._id,
-              defectCode: d.defectCode || d._id,
-              assetId: d.assetId,
-              department: d.department,
-              priority: d.priority,
-              score: d.priorityScore || d._score || 50,
-              estimatedDurationHrs: d.estimatedDurationHrs || 2,
-              faultDescription: d.faultDescription
-            }],
-            rawWorkHours: d.estimatedDurationHrs || 2,
-            separateDurationHrs: (d.estimatedDurationHrs || 2) + 1.0,
-            totalDurationHrs: (d.estimatedDurationHrs || 2) + 1.0,
-            timeSavedHrs: 0,
-            utilizationRate: 75,
-            efficiencyGainPct: 0,
-            reasoning: 'Standard departmental maintenance block.'
-          });
+            priority: d.priority,
+            score: d.priorityScore || d._score || 50,
+            estimatedDurationHrs: dDur,
+            isSplittable: Boolean(d.isSplittable),
+            workZone: d.workZone || 'Zone-A',
+            faultDescription: d.faultDescription
+          }],
+          rawWorkHours: dDur,
+          separateDurationHrs: dDur + 1.0,
+          totalDurationHrs: dDur + 1.0,
+          timeSavedHrs: 0,
+          utilizationRate: 75,
+          efficiencyGainPct: 0,
+          reasoning: 'Standard departmental maintenance block.'
         });
-      }
-    } else {
+      });
+    } else if (items.length > 0) {
       // Single department bundle
       const topDefects = items.slice(0, 2);
-      const totalHrs = topDefects.reduce((s, d) => s + (d.estimatedDurationHrs || 2), 0);
+      const totalHrs = topDefects.reduce((s, d) => s + (d.estimatedDurationHrs || d.durationHours || 2), 0);
       bundles.push({
         bundleId: `BNDL-DEPT-${String(bundleIndex++).padStart(3, '0')}`,
         corridorId,
@@ -147,6 +146,7 @@ function bundleDefects(defects) {
         departmentsList: [items[0].department],
         defectCount: topDefects.length,
         isMultiDepartment: false,
+        hasSplittable: topDefects.some(d => d.isSplittable),
         badgeText: `${topDefects.length} ${items[0].department} tasks bundled`,
         defects: topDefects.map(d => ({
           _id: d._id,
@@ -155,7 +155,9 @@ function bundleDefects(defects) {
           department: d.department,
           priority: d.priority,
           score: d.priorityScore || d._score || 50,
-          estimatedDurationHrs: d.estimatedDurationHrs || 2,
+          estimatedDurationHrs: d.estimatedDurationHrs || d.durationHours || 2,
+          isSplittable: Boolean(d.isSplittable),
+          workZone: d.workZone || 'Zone-A',
           faultDescription: d.faultDescription
         })),
         rawWorkHours: totalHrs,
@@ -169,7 +171,7 @@ function bundleDefects(defects) {
     }
   });
 
-  // Sort: Multi-department bundles first, then by score
+  // Sort: Multi-department bundles first, then by priority score
   bundles.sort((a, b) => {
     if (a.isMultiDepartment !== b.isMultiDepartment) return a.isMultiDepartment ? -1 : 1;
     return (b.defects[0]?.score || 0) - (a.defects[0]?.score || 0);

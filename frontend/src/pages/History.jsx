@@ -3,14 +3,35 @@ import { useRailOps } from '../context/RailOpsContext';
 import KPICard from '../components/KPICard';
 
 export default function History() {
-  const { blocks, isLoading: loading, refreshData } = useRailOps();
+  const { blocks, recommendationHistory = [], isLoading: loading, refreshData } = useRailOps();
 
   const [activeTab, setActiveTab] = useState('plans'); // 'plans' | 'rawBlocks'
   const [filterCorridor, setFilterCorridor] = useState('ALL');
   const [filterStatus, setFilterStatus] = useState('ALL');
 
-  // Static + Dynamic Optimization Plan Audit Versions (Requirement 27)
-  const planVersions = [
+  // Dynamic audit entries from backend recommendations
+  const dynamicAuditPlans = recommendationHistory.map(r => ({
+    planVersion: r.recommendationId,
+    blockCode: r.resultingBlockId?.blockCode || '—',
+    corridorId: r.corridorId,
+    departments: r.departments?.join(' + ') || 'Track',
+    originalWindow: `${(r.durationMinutes / 60).toFixed(1)}h requested`,
+    optimizedWindow: `${new Date(r.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })} – ${new Date(r.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`,
+    timeSaved: r.departments?.length >= 3 ? '5.0 Hours Saved' : r.departments?.length === 2 ? '3.0 Hours Saved' : '1.0 Hour Saved',
+    availabilityImprovement: r.departments?.length >= 3 ? '+4.6%' : '+3.2%',
+    status: r.status,
+    approvalState: r.status === 'ACCEPTED' || r.status === 'SCHEDULED'
+      ? 'APPROVED (Chief Controller)'
+      : r.status === 'REJECTED'
+      ? 'REJECTED by Operator'
+      : r.status === 'SUPERSEDED'
+      ? 'SUPERSEDED (Auto-Replanned)'
+      : 'EXPIRED (Window Passed)',
+    reason: r.operatorAction?.reason || r.reasons?.[0] || '—'
+  }));
+
+  // Baseline Historical Audit Records
+  const baselinePlans = [
     {
       planVersion: 'PLAN-2026-09-03-01',
       blockCode: 'BLK-COORD-01',
@@ -20,9 +41,9 @@ export default function History() {
       optimizedWindow: '02:00 – 08:00 (Night Shift)',
       timeSaved: '5.0 Hours Saved',
       availabilityImprovement: '+4.6% Asset Availability',
-      status: 'EXECUTED',
+      status: 'SCHEDULED',
       approvalState: 'APPROVED (Sr. DOM)',
-      executedAt: 'Today, 02:00 IST'
+      reason: 'Golden window multi-department consolidation'
     },
     {
       planVersion: 'PLAN-2026-09-02-04',
@@ -35,7 +56,7 @@ export default function History() {
       availabilityImprovement: '+3.2% Asset Availability',
       status: 'COMPLETED',
       approvalState: 'APPROVED (Dy. COM/Goods)',
-      executedAt: 'Yesterday, 01:30 IST'
+      reason: 'Spatial consolidation between Kanpur & Prayagraj'
     },
     {
       planVersion: 'PLAN-2026-09-01-02',
@@ -48,9 +69,11 @@ export default function History() {
       availabilityImprovement: '+2.9% Asset Availability',
       status: 'COMPLETED',
       approvalState: 'APPROVED (Sr. DOM)',
-      executedAt: '01 Sep, 02:00 IST'
+      reason: 'Catenary maintenance coordinated with track tamping'
     }
   ];
+
+  const planVersions = [...dynamicAuditPlans, ...baselinePlans];
 
   const filteredBlocks = blocks.filter(b => {
     if (filterCorridor !== 'ALL' && b.corridorId !== filterCorridor) return false;

@@ -11,6 +11,12 @@ const DefectSchema = new mongoose.Schema({
   status: { type: String, enum: ['PENDING', 'BUNDLED', 'SCHEDULED', 'EXECUTED', 'REJECTED'], default: 'PENDING' },
   corridorId: { type: String, default: null },
   estimatedDurationHrs: { type: Number, default: 4 },
+  isSplittable: { type: Boolean, default: false },
+  workZone: { type: String, default: 'Zone-A' },
+  preferredStartHour: { type: Number, default: null },
+  carriedForwardFrom: { type: mongoose.Schema.Types.ObjectId, ref: 'Defect', default: null },
+  allocatedDurationHrs: { type: Number, default: 0 },
+  remainingDurationHrs: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now }
 });
 

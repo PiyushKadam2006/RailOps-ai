@@ -1,23 +1,20 @@
+// Controlled Deterministic Seed Data for RailOps AI Prototype
+// Covers 04 September 2026 and 05 September 2026 across all 5 Indian Railways Trunk Corridors
+// Scenarios A through F included deterministically without random overlapping block loops.
+
 const mongoose = require('mongoose');
-const { faker } = require('@faker-js/faker');
 const Defect = require('../models/Defect');
 const Block = require('../models/Block');
 const Corridor = require('../models/Corridor');
 const TrainSchedule = require('../models/TrainSchedule');
 const FreightForecast = require('../models/FreightForecast');
 const BlockWindow = require('../models/BlockWindow');
+const Recommendation = require('../models/Recommendation');
+
 const timetableData = require('../data/timetableData');
 const freightForecastData = require('../data/freightForecastData');
 const blockWindowsData = require('../data/blockWindowsData');
-
-const ASSETS = [
-  'LOCO-001', 'LOCO-002', 'LOCO-003', 'LOCO-004', 'LOCO-005', 'LOCO-006', 'LOCO-007', 'LOCO-008',
-  'EMU-101', 'EMU-102', 'EMU-103', 'EMU-104', 'EMU-105',
-  'DMU-201', 'DMU-202', 'WAG-301', 'WAG-302', 'TRK-401', 'TRK-402', 'SIG-501', 'SIG-502'
-];
-
-const DEPTS = ['Traction', 'Signalling', 'Track', 'Rolling Stock', 'Infrastructure', 'Electrical'];
-const SOURCES = ['TMS', 'SMMS', 'TDMS', 'BDMS', 'COA'];
+const { getToday, getTomorrow } = require('../engine/timeUtils');
 
 const CORRIDORS_DATA = [
   { corridorId: 'COR-01', name: 'Delhi–Mumbai', fromStation: 'NDLS', toStation: 'CSMT', totalKm: 1384 },
@@ -27,88 +24,11 @@ const CORRIDORS_DATA = [
   { corridorId: 'COR-05', name: 'Delhi–Chennai', fromStation: 'NDLS', toStation: 'MAS', totalKm: 2175 }
 ];
 
-const FAULTS = [
-  'Pantograph alignment drift at OHE contact wire',
-  'Axle bearing temperature exceeding 85°C threshold',
-  'Signal relay failure causing block section lockout',
-  'Brake cylinder pressure loss in bogie assembly',
-  'Track gauge deviation at km marker 42 — 3mm over tolerance',
-  'Traction motor insulation resistance below minimum spec',
-  'OHE catenary tension loss in neutral section',
-  'Wheel flange wear exceeding maintenance interval limit',
-  'ATP transponder intermittent communication fault',
-  'Point machine failure at platform entry switch',
-  'Rolling stock coupling mechanism lateral misalignment',
-  'Power supply unit overheating in relay control cabinet',
-  'Track circuit shunting sensitivity degradation',
-  'Emergency brake valve actuation under normal operations',
-  'Overhead line equipment earthing fault detected',
-  'Cab signalling display showing intermittent dropout errors',
-  'Diesel injector fouling on DMU traction unit',
-  'Speedometer sensor giving erratic velocity readings',
-  'SCADA telemetry loss on remote signalling panel',
-  'Fishplate crack detected at rail joint km 118',
-  'Battery charger unit failure in control car',
-  'Earth leakage detected on 25kV feeder cable',
-  'Ballast voids recorded over 40m stretch at km 267',
-  'Crossover switch heating element failure in winter ops',
-  'Retaining wall erosion flagged near embankment km 89'
-];
-
-const getWeekStart = () => {
-  const now = new Date()
-  const dayOfWeek = now.getDay() // 0=Sun, 1=Mon, ..., 6=Sat
-  const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1
-  const weekStart = new Date(now)
-  weekStart.setDate(now.getDate() - daysFromMonday)
-  weekStart.setHours(0, 0, 0, 0)
-  return weekStart;
-};
-
-const GOLDEN_DEMO_DEFECTS = [
-  {
-    defectCode: 'DEF-0101',
-    assetId: 'TRK-COR1-142',
-    department: 'Track',
-    source: 'TMS',
-    corridorId: 'COR-01',
-    estimatedDurationHrs: 4,
-    priority: 'CRITICAL',
-    priorityScore: 95,
-    status: 'PENDING',
-    faultDescription: 'Ultrasonic flaw detected on high-speed rail section at KP 142.5. Requires emergency rail replacement and precision grinding.'
-  },
-  {
-    defectCode: 'DEF-0102',
-    assetId: 'SIG-COR1-142',
-    department: 'Signalling',
-    source: 'SMMS',
-    corridorId: 'COR-01',
-    estimatedDurationHrs: 2,
-    priority: 'HIGH',
-    priorityScore: 88,
-    status: 'PENDING',
-    faultDescription: 'Point machine electronic interlocking relay calibration and detection rod overhaul at Junction 142.'
-  },
-  {
-    defectCode: 'DEF-0103',
-    assetId: 'OHE-COR1-142',
-    department: 'Traction',
-    source: 'TDMS',
-    corridorId: 'COR-01',
-    estimatedDurationHrs: 2,
-    priority: 'HIGH',
-    priorityScore: 86,
-    status: 'PENDING',
-    faultDescription: 'OHE contact wire dropper replacement, neutral section inspection, and tension realignment at KM 142.8.'
-  }
-];
-
-function generateTrainSchedules(todayDate) {
+function generateTrainSchedules(baseDate) {
   const schedules = [];
   const days = [-1, 0, 1, 2]; // yesterday, today, tomorrow, day after
   days.forEach(dayOffset => {
-    const d = new Date(todayDate);
+    const d = new Date(baseDate);
     d.setDate(d.getDate() + dayOffset);
     d.setHours(0, 0, 0, 0);
 
@@ -129,7 +49,7 @@ function generateTrainSchedules(todayDate) {
         track: t.track || (t.trainType === 'Goods' ? 'DN Main' : 'UP Main'),
         departureTime: dep,
         arrivalTime: arr,
-        priority: t.priority,
+        priority: t.priority || 1,
         isAffected: false
       });
     });
@@ -137,284 +57,379 @@ function generateTrainSchedules(todayDate) {
   return schedules;
 }
 
-const seedDatabase = async (force = false) => {
-  const existingDefects = await Defect.countDocuments();
-  const today = new Date(); today.setHours(0, 0, 0, 0);
+const seedDatabase = async (force = true) => {
+  console.log('Seeding controlled deterministic RailOps AI dataset for Sep 4 & 5...');
 
-  if (existingDefects > 0 && !force) {
-    // Ensure Golden Demo defects exist and are in PENDING state
-    for (const gd of GOLDEN_DEMO_DEFECTS) {
-      await Defect.findOneAndUpdate(
-        { defectCode: gd.defectCode },
-        { ...gd, createdAt: new Date() },
-        { upsert: true, new: true }
-      );
-    }
-
-    // Ensure FreightForecast and BlockWindow exist
-    const ffCount = await FreightForecast.countDocuments();
-    if (ffCount === 0) {
-      await FreightForecast.insertMany(freightForecastData);
-    }
-
-    const bwCount = await BlockWindow.countDocuments();
-    if (bwCount === 0) {
-      await BlockWindow.insertMany(blockWindowsData);
-    }
-
-    // Ensure TrainSchedule has timetable records
-    const tsCount = await TrainSchedule.countDocuments();
-    if (tsCount < 20) {
-      await TrainSchedule.insertMany(generateTrainSchedules(today));
-    }
-
-    console.log('Verified and ensured Golden Demo defects and synthetic datasets in existing DB.');
-    return;
-  }
-
-  console.log('Clearing and seeding database...');
   await Corridor.deleteMany({});
   await Defect.deleteMany({});
   await Block.deleteMany({});
   await TrainSchedule.deleteMany({});
   await FreightForecast.deleteMany({});
   await BlockWindow.deleteMany({});
+  await Recommendation.deleteMany({});
 
+  const today = getToday();
+  const tomorrow = getTomorrow();
+
+  // 1. Insert Corridors, Freight Forecasts, and Corridor Windows
   await Corridor.insertMany(CORRIDORS_DATA);
   await FreightForecast.insertMany(freightForecastData);
   await BlockWindow.insertMany(blockWindowsData);
   await TrainSchedule.insertMany(generateTrainSchedules(today));
 
-  const corridorIds = CORRIDORS_DATA.map(c => c.corridorId);
-  const weekStart = getWeekStart();
-  const weekStartMs = weekStart.getTime();
-
-  // Seed 100 Defects including Golden Demo defects
-  const defectsData = [...GOLDEN_DEMO_DEFECTS];
-  for (let i = 0; i < 97; i++) {
-    const pRand = Math.random();
-    let priority, pScore;
-    if (pRand < 0.15) { priority = 'CRITICAL'; pScore = faker.number.int({ min: 85, max: 100 }); }
-    else if (pRand < 0.45) { priority = 'HIGH'; pScore = faker.number.int({ min: 60, max: 84 }); }
-    else if (pRand < 0.80) { priority = 'MEDIUM'; pScore = faker.number.int({ min: 35, max: 59 }); }
-    else { priority = 'LOW'; pScore = faker.number.int({ min: 10, max: 34 }); }
-
-    const sRand = Math.random();
-    let status;
-    if (sRand < 0.40) status = 'PENDING';
-    else if (sRand < 0.65) status = 'EXECUTED';
-    else if (sRand < 0.85) status = 'BUNDLED';
-    else status = 'REJECTED';
-
-    const randomDayOffset = Math.floor(Math.random() * 7);
-    const randomHour = Math.floor(Math.random() * 24);
-    const randomMin = Math.floor(Math.random() * 60);
-    const createdAt = new Date(weekStartMs);
-    createdAt.setDate(new Date(weekStartMs).getDate() + randomDayOffset);
-    createdAt.setHours(randomHour, randomMin, 0, 0);
-    
-    defectsData.push({
-      defectCode: 'DEF-' + String(i + 4).padStart(4, '0'),
-      assetId: faker.helpers.arrayElement(ASSETS),
-      department: faker.helpers.arrayElement(DEPTS),
-      source: faker.helpers.arrayElement(SOURCES),
-      faultDescription: faker.helpers.arrayElement(FAULTS),
-      priority,
-      priorityScore: pScore,
-      status,
-      corridorId: faker.helpers.arrayElement(corridorIds),
-      estimatedDurationHrs: faker.number.int({ min: 2, max: 8 }),
-      createdAt
-    });
-  }
-  await Defect.insertMany(defectsData);
-
-  const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
-
-  // Seed 100 Blocks
-  const blocksData = [];
-  for (let i = 0; i < 100; i++) {
-    const randomDayOffset = Math.floor(Math.random() * 7);
-    const randomHour = Math.floor(Math.random() * 24);
-    const randomMin = Math.floor(Math.random() * 60);
-    const startTime = new Date(weekStartMs);
-    startTime.setDate(new Date(weekStartMs).getDate() + randomDayOffset);
-    startTime.setHours(randomHour, randomMin, 0, 0);
-
-    const randomDurationHrs = Math.floor(Math.random() * 7) + 2;
-    const endTime = new Date(startTime.getTime() + (randomDurationHrs * 3600 * 1000));
-    
-    const bRand = Math.random();
-    let status = bRand < 0.4 ? 'COMPLETED' : bRand < 0.7 ? 'APPROVED' : 'ACTIVE';
-    const isToday = startTime.toDateString() === today.toDateString();
-    const isTomorrowDate = startTime.toDateString() === tomorrow.toDateString();
-    if (isToday || isTomorrowDate) {
-      status = 'COMPLETED';
-    }
-
-    let corridorId = faker.helpers.arrayElement(corridorIds);
-    const conflictFlags = Math.random() < 0.15 ? ['TRAIN_OVERLAP'] : [];
-
-    blocksData.push({
-      blockCode: 'BLK-' + String(i + 1).padStart(4, '0'),
-      assetId: faker.helpers.arrayElement(ASSETS),
-      corridorId,
-      department: faker.helpers.arrayElement(DEPTS),
-      startTime,
-      endTime,
-      status,
-      trainImpact: faker.number.int({ min: 0, max: 5 }),
-      conflictFlags
-    });
-  }
-
-  const CORRIDORS_IDS = ['COR-01','COR-02','COR-03','COR-04','COR-05'];
-  const BLOCK_STATUSES = ['ACTIVE', 'APPROVED', 'PROPOSED', 'COMPLETED'];
-
-  const todayBlocks = [
-    // COR-02 (Delhi–Howrah): Morning track possession and afternoon signalling
+  // 2. Controlled Defects for Scenarios A through F
+  const defectsData = [
+    // ── SCENARIO A: STRONG MULTI-DEPARTMENT MERGE (COR-02) ──
     {
-      blockCode: 'BLK-C2-01', assetId: 'TRK-201', corridorId: 'COR-02', department: 'Track', track: 'UP Main',
-      startTime: (() => { const d=new Date(today); d.setHours(5,0,0,0); return d })(),
-      endTime:   (() => { const d=new Date(today); d.setHours(8,30,0,0); return d })(),
-      status: 'ACTIVE', trainImpact: 1, conflictFlags: [], linkedDefectId: null
+      defectCode: 'DEF-0101',
+      assetId: 'TRK-COR2-201',
+      department: 'Track',
+      source: 'TMS',
+      corridorId: 'COR-02',
+      estimatedDurationHrs: 4,
+      priority: 'CRITICAL',
+      priorityScore: 95,
+      status: 'PENDING',
+      isSplittable: false,
+      workZone: 'Zone-2A',
+      faultDescription: 'Ultrasonic rail defect at KM 188.4 near Kanpur. Requires switch rail renewal and machine tamping.'
     },
     {
-      blockCode: 'BLK-C2-02', assetId: 'SIG-202', corridorId: 'COR-02', department: 'Signalling', track: 'DN Main',
-      startTime: (() => { const d=new Date(today); d.setHours(13,0,0,0); return d })(),
-      endTime:   (() => { const d=new Date(today); d.setHours(16,0,0,0); return d })(),
-      status: 'APPROVED', trainImpact: 1, conflictFlags: [], linkedDefectId: null
-    },
-    // COR-03 (Mumbai–Chennai): Morning traction and an operational conflict pair for multi-corridor demo
-    {
-      blockCode: 'BLK-C3-01', assetId: 'OHE-301', corridorId: 'COR-03', department: 'Traction', track: 'DN Main',
-      startTime: (() => { const d=new Date(today); d.setHours(6,0,0,0); return d })(),
-      endTime:   (() => { const d=new Date(today); d.setHours(9,30,0,0); return d })(),
-      status: 'APPROVED', trainImpact: 1, conflictFlags: [], linkedDefectId: null
-    },
-    {
-      blockCode: 'BLK-C3-02', assetId: 'TRK-302', corridorId: 'COR-03', department: 'Track', track: 'UP Main',
-      startTime: (() => { const d=new Date(today); d.setHours(14,0,0,0); return d })(),
-      endTime:   (() => { const d=new Date(today); d.setHours(17,30,0,0); return d })(),
-      status: 'ACTIVE', trainImpact: 2, conflictFlags: ['DEPT_CONFLICT'], linkedDefectId: null
+      defectCode: 'DEF-0102',
+      assetId: 'SIG-COR2-202',
+      department: 'Signalling',
+      source: 'SMMS',
+      corridorId: 'COR-02',
+      estimatedDurationHrs: 2,
+      priority: 'HIGH',
+      priorityScore: 88,
+      status: 'PENDING',
+      isSplittable: false,
+      workZone: 'Zone-2A',
+      faultDescription: 'Point machine electronic interlocking relay calibration and detection rod overhaul at Junction 188.'
     },
     {
-      blockCode: 'BLK-C3-03', assetId: 'SIG-303', corridorId: 'COR-03', department: 'Signalling', track: 'UP Main',
-      startTime: (() => { const d=new Date(today); d.setHours(15,30,0,0); return d })(),
-      endTime:   (() => { const d=new Date(today); d.setHours(19,0,0,0); return d })(),
-      status: 'APPROVED', trainImpact: 2, conflictFlags: ['DEPT_CONFLICT'], linkedDefectId: null
+      defectCode: 'DEF-0103',
+      assetId: 'OHE-COR2-203',
+      department: 'Traction',
+      source: 'TDMS',
+      corridorId: 'COR-02',
+      estimatedDurationHrs: 2,
+      priority: 'HIGH',
+      priorityScore: 86,
+      status: 'PENDING',
+      isSplittable: false,
+      workZone: 'Zone-2A',
+      faultDescription: 'OHE contact wire dropper replacement and catenary tension realignment at KM 188.9.'
     },
-    // COR-04 (Howrah–Chennai): Midday track and evening electrical
+
+    // ── SCENARIO B: PASSENGER BLOCKED WINDOW (COR-01) ──
     {
-      blockCode: 'BLK-C4-01', assetId: 'TRK-401', corridorId: 'COR-04', department: 'Track', track: 'UP Main',
-      startTime: (() => { const d=new Date(today); d.setHours(9,30,0,0); return d })(),
-      endTime:   (() => { const d=new Date(today); d.setHours(13,0,0,0); return d })(),
-      status: 'APPROVED', trainImpact: 1, conflictFlags: [], linkedDefectId: null
+      defectCode: 'DEF-0201',
+      assetId: 'TRK-COR1-102',
+      department: 'Track',
+      source: 'TMS',
+      corridorId: 'COR-01',
+      estimatedDurationHrs: 3,
+      priority: 'HIGH',
+      priorityScore: 82,
+      status: 'PENDING',
+      isSplittable: false,
+      workZone: 'Zone-1B',
+      preferredStartHour: 11,
+      faultDescription: 'Track gauge widening flagged on UP Main. Preferred slot 11:30 conflicts with Paschim Superfast 12954.'
+    },
+
+    // ── SCENARIO C: FREIGHT BLOCKED WINDOW (COR-04) ──
+    {
+      defectCode: 'DEF-0301',
+      assetId: 'OHE-COR4-401',
+      department: 'Traction',
+      source: 'TDMS',
+      corridorId: 'COR-04',
+      estimatedDurationHrs: 2.5,
+      priority: 'MEDIUM',
+      priorityScore: 65,
+      status: 'PENDING',
+      isSplittable: false,
+      workZone: 'Zone-4A',
+      preferredStartHour: 6,
+      faultDescription: 'Catenary insulator washing and mast earth checking. Morning slot 06:00 conflicts with Iron Ore Freight GDS-501.'
+    },
+
+    // ── SCENARIO D: PARTIAL EXECUTION WITH CARRY-FORWARD (COR-05) ──
+    {
+      defectCode: 'DEF-0401',
+      assetId: 'TRK-COR5-501',
+      department: 'Track',
+      source: 'TMS',
+      corridorId: 'COR-05',
+      estimatedDurationHrs: 4,
+      priority: 'HIGH',
+      priorityScore: 84,
+      status: 'PENDING',
+      isSplittable: true,
+      workZone: 'Zone-5C',
+      faultDescription: 'Deep ballast screening and sleeper spacing adjustment over 600m segment. Splittable into 3h initial block + 1h carry-forward.'
+    },
+
+    // ── SCENARIO E: EXISTING MAINTENANCE CONSTRAINT (COR-03) ──
+    {
+      defectCode: 'DEF-0501',
+      assetId: 'SIG-COR3-301',
+      department: 'Signalling',
+      source: 'SMMS',
+      corridorId: 'COR-03',
+      estimatedDurationHrs: 2.5,
+      priority: 'MEDIUM',
+      priorityScore: 68,
+      status: 'PENDING',
+      isSplittable: false,
+      workZone: 'Zone-3A',
+      faultDescription: 'Track circuit receiver renewal. Cannot overlap existing morning traction block BLK-C3-01.'
+    },
+
+    // Background Routine Defects for realistic operations
+    {
+      defectCode: 'DEF-0601',
+      assetId: 'LOCO-003',
+      department: 'Rolling Stock',
+      source: 'BDMS',
+      corridorId: 'COR-01',
+      estimatedDurationHrs: 3,
+      priority: 'MEDIUM',
+      priorityScore: 55,
+      status: 'PENDING',
+      isSplittable: false,
+      faultDescription: 'Traction motor brush wear and bogie clearance inspection at Vadodara shed.'
     },
     {
-      blockCode: 'BLK-C4-02', assetId: 'OHE-402', corridorId: 'COR-04', department: 'Traction', track: 'DN Main',
-      startTime: (() => { const d=new Date(today); d.setHours(17,0,0,0); return d })(),
-      endTime:   (() => { const d=new Date(today); d.setHours(20,30,0,0); return d })(),
-      status: 'APPROVED', trainImpact: 1, conflictFlags: [], linkedDefectId: null
+      defectCode: 'DEF-0602',
+      assetId: 'SIG-COR1-115',
+      department: 'Signalling',
+      source: 'SMMS',
+      corridorId: 'COR-01',
+      estimatedDurationHrs: 2,
+      priority: 'LOW',
+      priorityScore: 38,
+      status: 'PENDING',
+      isSplittable: true,
+      faultDescription: 'Telemetry battery backup testing on remote auto-signalling hut KM 210.'
     },
-    // COR-05 (Delhi–Chennai): Morning traction on DN Main and afternoon track on UP Main
     {
-      blockCode: 'BLK-C5-01', assetId: 'OHE-501', corridorId: 'COR-05', department: 'Traction', track: 'DN Main',
-      startTime: (() => { const d=new Date(today); d.setHours(6,30,0,0); return d })(),
-      endTime:   (() => { const d=new Date(today); d.setHours(10,0,0,0); return d })(),
-      status: 'ACTIVE', trainImpact: 1, conflictFlags: [], linkedDefectId: null
+      defectCode: 'DEF-0603',
+      assetId: 'OHE-COR2-218',
+      department: 'Traction',
+      source: 'TDMS',
+      corridorId: 'COR-02',
+      estimatedDurationHrs: 2,
+      priority: 'MEDIUM',
+      priorityScore: 60,
+      status: 'PENDING',
+      isSplittable: false,
+      faultDescription: 'Neutral section ceramic insulator inspection at Substation 4.'
     },
     {
-      blockCode: 'BLK-C5-02', assetId: 'TRK-502', corridorId: 'COR-05', department: 'Track', track: 'UP Main',
-      startTime: (() => { const d=new Date(today); d.setHours(14,30,0,0); return d })(),
-      endTime:   (() => { const d=new Date(today); d.setHours(18,0,0,0); return d })(),
-      status: 'APPROVED', trainImpact: 1, conflictFlags: [], linkedDefectId: null
+      defectCode: 'DEF-0604',
+      assetId: 'TRK-COR4-412',
+      department: 'Track',
+      source: 'TMS',
+      corridorId: 'COR-04',
+      estimatedDurationHrs: 3,
+      priority: 'LOW',
+      priorityScore: 42,
+      status: 'PENDING',
+      isSplittable: false,
+      faultDescription: 'Level crossing surface re-paving and check-rail clearance adjustment.'
     }
   ];
 
-  const tomorrowBlocks = [];
-  for (let i = 0; i < 15; i++) {
-    const startHour = Math.floor(Math.random() * 20);
-    const durationHrs = Math.floor(Math.random() * 5) + 2;
-    const startTime = new Date(tomorrow);
-    startTime.setHours(startHour, Math.floor(Math.random()*60), 0, 0);
-    const endTime = new Date(startTime);
-    endTime.setHours(startTime.getHours() + durationHrs);
+  await Defect.insertMany(defectsData);
 
-    let corridorId = CORRIDORS_IDS[i % 5];
-    const tmrNightStart = new Date(tomorrow); tmrNightStart.setHours(1, 0, 0, 0);
-    const tmrNightEnd = new Date(tomorrow); tmrNightEnd.setHours(9, 0, 0, 0);
-    if (corridorId === 'COR-01' && startTime < tmrNightEnd && endTime > tmrNightStart) {
-      corridorId = 'COR-02';
+  // 3. Controlled Committed Blocks (Clean, purposeful schedule without random overlapping clutter)
+  const blocksData = [
+    // ── COR-01: Clean historical morning block + clean evening block ──
+    {
+      blockCode: 'BLK-C1-01',
+      assetId: 'TRK-COR1-01',
+      corridorId: 'COR-01',
+      department: 'Track',
+      track: 'UP Main',
+      startTime: (() => { const d = new Date(today); d.setHours(4, 30, 0, 0); return d; })(),
+      endTime:   (() => { const d = new Date(today); d.setHours(6, 0, 0, 0); return d; })(),
+      status: 'COMPLETED',
+      trainImpact: 0,
+      conflictFlags: [],
+      safetyBufferMinutes: 20,
+      source: 'HISTORICAL'
+    },
+    {
+      blockCode: 'BLK-C1-02',
+      assetId: 'OHE-COR1-02',
+      corridorId: 'COR-01',
+      department: 'Traction',
+      track: 'DN Main',
+      startTime: (() => { const d = new Date(today); d.setHours(21, 30, 0, 0); return d; })(),
+      endTime:   (() => { const d = new Date(today); d.setHours(23, 0, 0, 0); return d; })(),
+      status: 'APPROVED',
+      trainImpact: 0,
+      conflictFlags: [],
+      safetyBufferMinutes: 20,
+      source: 'AI_OPTIMIZED'
+    },
+
+    // ── COR-02: Clean morning track possession (UP Main) ──
+    {
+      blockCode: 'BLK-C2-01',
+      assetId: 'TRK-COR2-01',
+      corridorId: 'COR-02',
+      department: 'Track',
+      track: 'UP Main',
+      startTime: (() => { const d = new Date(today); d.setHours(8, 45, 0, 0); return d; })(),
+      endTime:   (() => { const d = new Date(today); d.setHours(11, 30, 0, 0); return d; })(),
+      status: 'COMPLETED',
+      trainImpact: 0,
+      conflictFlags: [],
+      safetyBufferMinutes: 20,
+      source: 'MANUAL'
+    },
+
+    // ── COR-03: Morning traction + EXACTLY ONE GENUINE ACTIVE CONFLICT PAIR for demo resolution ──
+    {
+      blockCode: 'BLK-C3-01',
+      assetId: 'OHE-COR3-01',
+      corridorId: 'COR-03',
+      department: 'Traction',
+      track: 'DN Main',
+      startTime: (() => { const d = new Date(today); d.setHours(6, 0, 0, 0); return d; })(),
+      endTime:   (() => { const d = new Date(today); d.setHours(9, 30, 0, 0); return d; })(),
+      status: 'COMPLETED',
+      trainImpact: 0,
+      conflictFlags: [],
+      safetyBufferMinutes: 20,
+      source: 'MANUAL'
+    },
+    // GENUINE ACTIVE CONFLICT: Track vs Signalling overlapping on same UP Main track
+    {
+      blockCode: 'BLK-CONF-01',
+      assetId: 'TRK-COR3-302',
+      corridorId: 'COR-03',
+      department: 'Track',
+      track: 'UP Main',
+      startTime: (() => { const d = new Date(today); d.setHours(15, 30, 0, 0); return d; })(),
+      endTime:   (() => { const d = new Date(today); d.setHours(18, 0, 0, 0); return d; })(),
+      status: 'ACTIVE',
+      trainImpact: 1,
+      conflictFlags: ['DEPT_CONFLICT'],
+      safetyBufferMinutes: 20,
+      source: 'MANUAL'
+    },
+    {
+      blockCode: 'BLK-CONF-02',
+      assetId: 'SIG-COR3-303',
+      corridorId: 'COR-03',
+      department: 'Signalling',
+      track: 'UP Main',
+      startTime: (() => { const d = new Date(today); d.setHours(16, 0, 0, 0); return d; })(),
+      endTime:   (() => { const d = new Date(today); d.setHours(18, 30, 0, 0); return d; })(),
+      status: 'APPROVED',
+      trainImpact: 1,
+      conflictFlags: ['DEPT_CONFLICT'],
+      safetyBufferMinutes: 20,
+      source: 'MANUAL'
+    },
+
+    // ── COR-04: Midday track on UP Main (clean) ──
+    {
+      blockCode: 'BLK-C4-01',
+      assetId: 'TRK-COR4-01',
+      corridorId: 'COR-04',
+      department: 'Track',
+      track: 'UP Main',
+      startTime: (() => { const d = new Date(today); d.setHours(12, 0, 0, 0); return d; })(),
+      endTime:   (() => { const d = new Date(today); d.setHours(15, 30, 0, 0); return d; })(),
+      status: 'APPROVED',
+      trainImpact: 0,
+      conflictFlags: [],
+      safetyBufferMinutes: 20,
+      source: 'AI_OPTIMIZED'
+    },
+
+    // ── COR-05: Clean morning traction on DN Main ──
+    {
+      blockCode: 'BLK-C5-01',
+      assetId: 'OHE-COR5-01',
+      corridorId: 'COR-05',
+      department: 'Traction',
+      track: 'DN Main',
+      startTime: (() => { const d = new Date(today); d.setHours(9, 30, 0, 0); return d; })(),
+      endTime:   (() => { const d = new Date(today); d.setHours(13, 0, 0, 0); return d; })(),
+      status: 'APPROVED',
+      trainImpact: 0,
+      conflictFlags: [],
+      safetyBufferMinutes: 20,
+      source: 'AI_OPTIMIZED'
+    },
+
+    // ── TOMORROW BLOCKS (Sep 5): 3 clean possessions across corridors ──
+    {
+      blockCode: 'BLK-TM-01',
+      assetId: 'TRK-TM-01',
+      corridorId: 'COR-01',
+      department: 'Track',
+      track: 'UP Main',
+      startTime: (() => { const d = new Date(tomorrow); d.setHours(2, 0, 0, 0); return d; })(),
+      endTime:   (() => { const d = new Date(tomorrow); d.setHours(5, 30, 0, 0); return d; })(),
+      status: 'APPROVED',
+      trainImpact: 0,
+      conflictFlags: [],
+      safetyBufferMinutes: 20,
+      source: 'AI_OPTIMIZED'
+    },
+    {
+      blockCode: 'BLK-TM-02',
+      assetId: 'OHE-TM-02',
+      corridorId: 'COR-02',
+      department: 'Traction',
+      track: 'DN Main',
+      startTime: (() => { const d = new Date(tomorrow); d.setHours(13, 0, 0, 0); return d; })(),
+      endTime:   (() => { const d = new Date(tomorrow); d.setHours(15, 30, 0, 0); return d; })(),
+      status: 'APPROVED',
+      trainImpact: 0,
+      conflictFlags: [],
+      safetyBufferMinutes: 20,
+      source: 'AI_OPTIMIZED'
+    },
+    {
+      blockCode: 'BLK-TM-03',
+      assetId: 'SIG-TM-03',
+      corridorId: 'COR-04',
+      department: 'Signalling',
+      track: 'UP Main',
+      startTime: (() => { const d = new Date(tomorrow); d.setHours(18, 0, 0, 0); return d; })(),
+      endTime:   (() => { const d = new Date(tomorrow); d.setHours(20, 30, 0, 0); return d; })(),
+      status: 'APPROVED',
+      trainImpact: 0,
+      conflictFlags: [],
+      safetyBufferMinutes: 20,
+      source: 'AI_OPTIMIZED'
     }
+  ];
 
-    tomorrowBlocks.push({
-      blockCode: 'BLK-TM-' + String(i+1).padStart(3,'0'),
-      assetId: faker.helpers.arrayElement(ASSETS),
-      corridorId,
-      department: faker.helpers.arrayElement(DEPTS),
-      startTime,
-      endTime,
-      status: faker.helpers.arrayElement(BLOCK_STATUSES),
-      trainImpact: Math.floor(Math.random()*3),
-      conflictFlags: Math.random() < 0.2 ? ['TRAIN_OVERLAP'] : [],
-      linkedDefectId: null
-    });
-  }
+  await Block.insertMany(blocksData);
 
-  const overlapA = {
-    blockCode: 'BLK-OVL-01',
-    assetId: 'LOCO-001',
-    corridorId: 'COR-01',
-    department: 'Traction',
-    track: 'UP Main',
-    startTime: (() => { const d=new Date(today); d.setHours(9,0,0,0); return d })(),
-    endTime:   (() => { const d=new Date(today); d.setHours(15,0,0,0); return d })(),
-    status: 'ACTIVE',
-    trainImpact: 2,
-    conflictFlags: ['DEPT_CONFLICT'],
-    linkedDefectId: null
-  };
-  const overlapB = {
-    blockCode: 'BLK-OVL-02',
-    assetId: 'EMU-101',
-    corridorId: 'COR-01',
-    department: 'Signalling',
-    track: 'UP Main',
-    startTime: (() => { const d=new Date(today); d.setHours(11,0,0,0); return d })(),
-    endTime:   (() => { const d=new Date(today); d.setHours(17,0,0,0); return d })(),
-    status: 'APPROVED',
-    trainImpact: 3,
-    conflictFlags: ['TRAIN_OVERLAP','DEPT_CONFLICT'],
-    linkedDefectId: null
-  };
-  const cleanEveningBlock = {
-    blockCode: 'BLK-COR1-03',
-    assetId: 'TRK-201',
-    corridorId: 'COR-01',
-    department: 'Track',
-    track: 'DN Main',
-    startTime: (() => { const d=new Date(today); d.setHours(19,0,0,0); return d })(),
-    endTime:   (() => { const d=new Date(today); d.setHours(21,30,0,0); return d })(),
-    status: 'APPROVED',
-    trainImpact: 1,
-    conflictFlags: [],
-    linkedDefectId: null
-  };
-
-  await Block.insertMany([...blocksData, ...todayBlocks, ...tomorrowBlocks, overlapA, overlapB, cleanEveningBlock]);
-  console.log('Database seeded successfully with deterministic datasets!');
+  console.log('Database successfully seeded with controlled, deterministic datasets (04–05 Sep 2026)!');
+  console.log('Active conflicts on network: exactly 1 operational conflict pair on COR-03.');
 };
 
 module.exports = { seedDatabase };
 
 if (require.main === module) {
-  const force = process.argv.includes('--force');
   mongoose.connect('mongodb://127.0.0.1:27017/railops_ai')
-    .then(() => seedDatabase(force))
+    .then(() => seedDatabase(true))
     .then(() => process.exit(0))
     .catch(err => {
-      console.error(err);
+      console.error('Seed script error:', err);
       process.exit(1);
     });
 }

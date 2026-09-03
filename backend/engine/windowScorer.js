@@ -1,116 +1,139 @@
 // Candidate Window Scorer for Indian Railways AI-Assisted Block Scheduling
-// Implements explainable composite scoring:
-//   candidateScore = priorityBenefit + bundlingBenefit + lowTrafficBenefit + assetAvailabilityBenefit
-//                    - passengerTrainPenalty - freightPenalty - conflictPenalty - fragmentationPenalty
+// Implements explainable, deterministic scoring based on multi-criteria heuristic:
+//   Score = Priority Benefit + Bundling Benefit + Off-Peak Benefit + Continuous Window Benefit
+//           - Train Proximity Penalty - Safety Buffer Penalty - Splitting Penalty - Infeasibility Penalty
+
+const { formatTime } = require('./timeUtils');
 
 /**
- * Scores an individual candidate window based on constraint evaluation and bundling benefits
+ * Scores an individual candidate window against evaluated constraints and bundling metadata
  * 
  * @param {Object} candidate Candidate window object
  * @param {Object} constraintResult Result from evaluateConstraints()
  * @param {Object} bundle Consolidated task bundle
- * @returns {Object} Candidate evaluation with composite score and explainability
+ * @returns {Object} Scored candidate evaluation with explainability reasons
  */
 function scoreCandidateWindow(candidate, constraintResult, bundle = {}) {
   const {
     feasible,
     passengerImpact = 0,
     freightImpact = 0,
-    freightLevel = 'LOW',
     violations = [],
     warnings = [],
-    scorePenalty = 0
+    constraintsSatisfied = [],
+    rejectionReasons = [],
+    canSplit = false,
+    carryForwardMinutes = 0
   } = constraintResult;
 
-  // 1. Benefits (Positive)
+  // 1. Positive Benefits
+  // Priority Benefit (0 - 40 pts)
   const avgPriority = bundle.defects?.length
-    ? Math.round(bundle.defects.reduce((s, d) => s + (d.priorityScore || d._score || 80), 0) / bundle.defects.length)
-    : 85;
-  const priorityBenefit = Math.round(avgPriority * 0.40); // ~35 - 38 pts
+    ? Math.round(bundle.defects.reduce((s, d) => s + (d.score || d.priorityScore || 70), 0) / bundle.defects.length)
+    : 75;
+  const priorityBenefit = Math.round(avgPriority * 0.35); // ~26 - 35 pts
 
-  // Bundling Benefit: Rewards 3-department consolidation
+  // Bundling Benefit (10 - 35 pts)
   const deptCount = new Set((bundle.defects || []).map(d => d.department)).size || 1;
-  const bundlingBenefit = deptCount >= 3 ? 40 : deptCount === 2 ? 25 : 10;
+  const bundlingBenefit = deptCount >= 3 ? 35 : deptCount === 2 ? 25 : 10;
 
-  // Low Traffic Benefit: Night shift with minimal headways
-  const isNightShift = candidate.windowStart.getHours() >= 1 && candidate.windowStart.getHours() <= 4;
-  const lowTrafficBenefit = isNightShift ? 30 : 10;
+  // Off-Peak Traffic Benefit (10 - 25 pts)
+  const startH = new Date(candidate.windowStart).getHours();
+  const isNightGoldenWindow = startH >= 1 && startH < 5;
+  const isMiddayInterPeak = startH >= 12 && startH < 15;
+  const offPeakBenefit = isNightGoldenWindow ? 25 : isMiddayInterPeak ? 18 : 10;
 
-  // Asset Availability Benefit: Concentrated downtime rather than fragmented closures
-  const assetAvailabilityBenefit = 25;
+  // Continuous Safe Window Benefit (10 - 20 pts)
+  const continuousHrs = (candidate.availableContinuousMins || candidate.durationMins || 240) / 60;
+  const continuousWindowBenefit = continuousHrs >= 4.0 ? 20 : continuousHrs >= 3.0 ? 15 : 10;
 
-  // 2. Penalties (Negative)
-  const passengerTrainPenalty = Math.round(passengerImpact * 22);
-  const freightPenalty = freightLevel === 'HIGH' ? 35 : freightLevel === 'MEDIUM' ? 15 : 5;
-  const conflictPenalty = violations.length * 50;
-  const fragmentationPenalty = candidate.durationHrs < 4 ? 20 : 0;
+  // Asset Availability & Repetitive Possession Reduction (10 - 20 pts)
+  const assetAvailabilityBenefit = bundle.timeSavedHrs > 0 ? 20 : 10;
+
+  // 2. Penalties
+  const passengerPenalty = passengerImpact * 30;
+  const freightPenalty = freightImpact * 15;
+  const splittingPenalty = canSplit ? 12 : 0;
+  const violationPenalty = violations.length * 50;
 
   const rawScore = (
     priorityBenefit +
     bundlingBenefit +
-    lowTrafficBenefit +
+    offPeakBenefit +
+    continuousWindowBenefit +
     assetAvailabilityBenefit
   ) - (
-    passengerTrainPenalty +
+    passengerPenalty +
     freightPenalty +
-    conflictPenalty +
-    fragmentationPenalty
+    splittingPenalty +
+    violationPenalty
   );
 
   const compositeScore = feasible
-    ? Math.min(100, Math.max(10, Math.round(rawScore)))
-    : Math.max(0, Math.round(rawScore - 60));
+    ? Math.min(100, Math.max(15, Math.round(rawScore)))
+    : Math.max(0, Math.round(rawScore - 50));
 
-  // Build Explanations
+  // 3. Explainability Reasons ("Why this window?")
   const reasons = [];
-  if (deptCount >= 3) {
-    reasons.push(`3 maintenance tasks consolidated into 1 corridor block (${Array.from(new Set(bundle.defects.map(d => d.department))).join(' + ')})`);
-  }
-  if (isNightShift) {
-    reasons.push('Scheduled during low passenger traffic night window (01:00–08:00)');
-  }
-  if (freightLevel === 'LOW') {
-    reasons.push('Low freight forecast — minimum goods train disruption');
+  if (feasible) {
+    reasons.push(`Strict future window with verified safety clearance`);
+    reasons.push(`${candidate.durationMins} minutes continuous operational availability`);
+    if (deptCount >= 2) {
+      reasons.push(`Compatible ${Array.from(new Set(bundle.defects.map(d => d.department))).join(' + ')} work consolidated into one possession`);
+    }
+    if (passengerImpact === 0) {
+      reasons.push('Zero passenger express movements disrupted');
+    }
+    if (freightImpact === 0) {
+      reasons.push('Zero goods rake movements disrupted');
+    }
+    if (isNightGoldenWindow) {
+      reasons.push('Scheduled during low-density night golden window (01:00–05:00)');
+    }
+    if (bundle.timeSavedHrs > 0) {
+      reasons.push(`Shared protection setup saves ${bundle.timeSavedHrs}h of corridor closure`);
+    }
+    if (canSplit) {
+      reasons.push(`Splittable task: ${candidate.durationMins}m allocated, ${carryForwardMinutes}m safely carried forward`);
+    }
   } else {
-    reasons.push(`Freight impact: ${freightImpact} expected goods trains`);
-  }
-  if (passengerImpact === 0) {
-    reasons.push('Zero passenger express trains delayed');
-  } else {
-    reasons.push(`${passengerImpact} passenger services scheduled in corridor window`);
-  }
-  if (bundle.timeSavedHrs > 0) {
-    reasons.push(`Shared protection setup saves ${bundle.timeSavedHrs}h of corridor closure`);
+    rejectionReasons.forEach(r => reasons.push(`Rejected: ${r}`));
   }
 
   return {
     candidateId: candidate.candidateId,
+    corridorId: candidate.corridorId,
     shiftName: candidate.shiftName,
     timeLabel: candidate.timeLabel,
     windowStart: candidate.windowStart,
     windowEnd: candidate.windowEnd,
     durationHrs: candidate.durationHrs,
+    durationMins: candidate.durationMins,
     feasible,
     compositeScore,
     breakdown: {
       priorityBenefit,
       bundlingBenefit,
-      lowTrafficBenefit,
+      offPeakBenefit,
+      continuousWindowBenefit,
       assetAvailabilityBenefit,
-      passengerTrainPenalty,
+      passengerPenalty,
       freightPenalty,
-      conflictPenalty,
-      fragmentationPenalty
+      splittingPenalty,
+      violationPenalty
     },
     metrics: {
       passengerImpact,
       freightImpact,
-      freightLevel,
       violationsCount: violations.length,
-      warningsCount: warnings.length
+      warningsCount: warnings.length,
+      isPartial: canSplit,
+      carriedForwardMinutes: carryForwardMinutes
     },
     violations,
     warnings,
+    constraintsSatisfied,
+    constraintsRejected: rejectionReasons,
     reasons
   };
 }

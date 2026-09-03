@@ -9,18 +9,22 @@ export function RailOpsProvider({ children }) {
   const [conflicts, setConflicts] = useState([]);
   const [schedules, setSchedules] = useState([]);
   const [pipelineStats, setPipelineStats] = useState(null);
+  const [activeRecommendation, setActiveRecommendation] = useState(null);
+  const [recommendationHistory, setRecommendationHistory] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activityFeed, setActivityFeed] = useState([]);
 
-  // Fetch all core datasets
+  // Fetch all core datasets including active recommendation
   const refreshData = useCallback(async () => {
     try {
-      const [defRes, blockRes, confRes, metricsRes, schedRes] = await Promise.all([
+      const [defRes, blockRes, confRes, metricsRes, schedRes, recRes, histRes] = await Promise.all([
         api.get('/defects'),
         api.get('/blocks'),
         api.get('/optimization/conflicts'),
         api.get('/integration/metrics').catch(() => ({ data: null })),
-        api.get('/schedules').catch(() => ({ data: [] }))
+        api.get('/schedules').catch(() => ({ data: [] })),
+        api.get('/recommendations/active').catch(() => ({ data: { recommendation: null } })),
+        api.get('/recommendations/history').catch(() => ({ data: [] }))
       ]);
 
       if (defRes.data) setDefects(defRes.data);
@@ -28,6 +32,8 @@ export function RailOpsProvider({ children }) {
       if (confRes.data) setConflicts(confRes.data);
       if (metricsRes.data) setPipelineStats(metricsRes.data);
       if (schedRes.data) setSchedules(schedRes.data);
+      if (recRes.data) setActiveRecommendation(recRes.data.recommendation || null);
+      if (histRes.data) setRecommendationHistory(histRes.data);
     } catch (err) {
       console.error('RailOpsContext: Error refreshing data:', err);
     } finally {
@@ -39,21 +45,88 @@ export function RailOpsProvider({ children }) {
     refreshData();
   }, [refreshData]);
 
+  // Accept an AI recommendation with fresh backend constraint validation
+  const handleAcceptRecommendation = useCallback(async (recId) => {
+    try {
+      const res = await api.post(`/recommendations/${recId}/accept`);
+      const data = res.data;
+
+      if (data.success && data.status === 'SCHEDULED') {
+        // Optimistically add newly committed block
+        if (data.block) {
+          setBlocks(prev => [data.block, ...prev]);
+        }
+        // Active recommendation is now scheduled, remove from card
+        setActiveRecommendation(null);
+
+        // Add to shared activity feed
+        setActivityFeed(prev => [{
+          id: Date.now(),
+          action: 'APPROVED',
+          defectCode: 'COORDINATED-PKG',
+          assetId: data.block?.assetId || 'CORRIDOR-BLOCK',
+          blockCode: data.block?.blockCode || 'BLK-COORD',
+          timestamp: new Date()
+        }, ...prev].slice(0, 15));
+
+        await refreshData();
+        return { success: true, status: 'SCHEDULED', message: data.message, block: data.block };
+      } else if (data.status === 'REPLANNED') {
+        // Stale window detected: update with auto-replanned proposal
+        if (data.newRecommendation) {
+          setActiveRecommendation(data.newRecommendation);
+        }
+        await refreshData();
+        return {
+          success: false,
+          status: 'REPLANNED',
+          message: data.message || 'Window no longer available; auto-replanned to next safe window.',
+          reason: data.reason,
+          newRecommendation: data.newRecommendation
+        };
+      }
+      return data;
+    } catch (err) {
+      console.error('RailOpsContext: handleAcceptRecommendation failed:', err);
+      throw err;
+    }
+  }, [refreshData]);
+
+  // Reject an AI recommendation
+  const handleRejectRecommendation = useCallback(async (recId, reason = 'Operator rejected proposal') => {
+    try {
+      const res = await api.post(`/recommendations/${recId}/reject`, { reason });
+      setActiveRecommendation(null);
+
+      setActivityFeed(prev => [{
+        id: Date.now(),
+        action: 'REJECTED',
+        defectCode: 'COORDINATED-PKG',
+        assetId: 'RECOMMENDATION',
+        blockCode: null,
+        timestamp: new Date()
+      }, ...prev].slice(0, 15));
+
+      await refreshData();
+      return res.data;
+    } catch (err) {
+      console.error('RailOpsContext: handleRejectRecommendation failed:', err);
+      throw err;
+    }
+  }, [refreshData]);
+
   // Approve a defect: sends PUT /api/defects/:id with status EXECUTED, adds generated block, mutates state instantly
   const handleApproveDefect = useCallback(async (defectId) => {
     try {
       const res = await api.put(`/defects/${defectId}`, { status: 'EXECUTED' });
       const { defect: updatedDefect, block: newBlock } = res.data;
 
-      // Optimistically / immediately mutate local defects array
       setDefects(prev => prev.map(d => (d._id === defectId ? (updatedDefect || { ...d, status: 'EXECUTED' }) : d)));
 
-      // Optimistically / immediately prepend newly generated block into local blocks array
       if (newBlock) {
         setBlocks(prev => [newBlock, ...prev]);
       }
 
-      // Add to shared activity feed
       setActivityFeed(prev => [{
         id: Date.now(),
         action: 'APPROVED',
@@ -133,10 +206,14 @@ export function RailOpsProvider({ children }) {
     conflicts,
     schedules,
     pipelineStats,
+    activeRecommendation,
+    recommendationHistory,
     isLoading,
     activityFeed,
     setActivityFeed,
     refreshData,
+    handleAcceptRecommendation,
+    handleRejectRecommendation,
     handleApproveDefect,
     handleRejectDefect,
     handleBundleDefect,

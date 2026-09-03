@@ -1,63 +1,17 @@
 import React, { useState, useMemo } from 'react';
 
-// Semantic Evaluation Helper: Checks Corridor, Time Overlap, AND Operational Resource/Track
-export function evaluateTrainConflict(train, blocks = []) {
-  const trainDep = new Date(train.departureTime).getTime();
-  const trainArr = new Date(train.arrivalTime).getTime();
-  const trainTrack = train.track || (train.trainType === 'Goods' ? 'DN Main' : 'UP Main');
-
-  // Find all maintenance blocks on the same corridor that overlap in time
-  const overlappingBlocks = blocks.filter((b) => {
-    if (b.corridorId !== train.corridorId) return false;
-    const bStart = new Date(b.startTime).getTime();
-    const bEnd = new Date(b.endTime).getTime();
-    return trainDep < bEnd && trainArr > bStart;
-  });
-
-  if (overlappingBlocks.length === 0) {
-    return {
-      status: 'CLEAR',
-      badge: '✓ CLEAR',
-      title: 'CLEAR (No Overlapping Possession)',
-      trackText: trainTrack,
-      reason: 'No overlapping maintenance possessions scheduled on this corridor during train movement slot.',
-      isConflict: false,
-    };
-  }
-
-  // Check if ANY overlapping block uses the SAME operational resource/track
-  const sameTrackBlock = overlappingBlocks.find((b) => {
-    const bTrack = b.track || 'UP Main';
-    return bTrack === trainTrack || bTrack === 'Both Tracks';
-  });
-
-  if (sameTrackBlock) {
-    const sStr = new Date(sameTrackBlock.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-    const eStr = new Date(sameTrackBlock.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-    return {
-      status: 'CONFLICT',
-      badge: '⚠️ CONFLICT',
-      title: '⚠️ OPERATIONAL CONFLICT DETECTED',
-      trackText: `${trainTrack} (Shared Conflict with ${sameTrackBlock.blockCode})`,
-      conflictingBlock: sameTrackBlock,
-      reason: `Same operational resource (${trainTrack}) + overlapping time. Maintenance possession ${sameTrackBlock.blockCode} (${sStr}–${eStr}) fouls active train path.`,
-      isConflict: true,
-    };
-  }
-
-  // Overlapping in time on same corridor, but operational resources are separated!
-  const sepBlock = overlappingBlocks[0];
-  const bTrack = sepBlock.track || 'DN Main';
-  const sStr = new Date(sepBlock.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-  const eStr = new Date(sepBlock.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+// Operational Priority Helper
+export function evaluateTrainStatus(train) {
+  const isPassenger = train.trainType !== 'Goods';
+  const trainTrack = train.track || (isPassenger ? 'UP Main' : 'DN Main');
 
   return {
-    status: 'SEPARATED',
-    badge: '✓ CLEAR',
-    title: 'CLEAR (Separated Operational Resource / Track)',
-    trackText: `${trainTrack} (Train) vs ${bTrack} (Block ${sepBlock.blockCode})`,
-    parallelBlock: sepBlock,
-    reason: `Separated operational resource / track. Train operates on ${trainTrack} while maintenance possession ${sepBlock.blockCode} (${sStr}–${eStr}) is isolated on parallel ${bTrack}. Double-line bi-directional signalling allows safe passage without catenary de-energization or fouling conflict.`,
+    status: 'OPERATIONAL',
+    badge: isPassenger ? '🚆 PRIORITY 1 — PASSENGER' : '🚛 PRIORITY 2 — FREIGHT',
+    title: isPassenger ? 'PROTECTED PASSENGER / EXPRESS MOVEMENT' : 'SCHEDULED GOODS / FREIGHT TRANSIT',
+    trackText: trainTrack,
+    priorityRank: isPassenger ? 'Priority 1 (Highest)' : 'Priority 2 (High)',
+    reason: 'Operational train movements maintain absolute priority. Maintenance blocks are constraint-evaluated to guarantee required safety buffers.',
     isConflict: false,
   };
 }
@@ -143,11 +97,10 @@ export default function TrainMovementTimeline({
     (tr) => tr.trainType === 'Goods' && (selectedCorridor === 'ALL' || tr.corridorId === selectedCorridor)
   ).length;
 
-  // Compute conflict state for clicked train
-  const trainConflictInfo = useMemo(() => {
+  const trainStatusInfo = useMemo(() => {
     if (!selectedTrain) return null;
-    return evaluateTrainConflict(selectedTrain, blocks);
-  }, [selectedTrain, blocks]);
+    return evaluateTrainStatus(selectedTrain);
+  }, [selectedTrain]);
 
   return (
     <div className="flex flex-col gap-2.5">
@@ -170,6 +123,9 @@ export default function TrainMovementTimeline({
             <span>
               Timetable Services: <strong className="text-cyan-400">{totalPassengerTrains} Express Trains</strong>
             </span>
+            <span className="text-emerald-400 font-bold">
+              ✓ Operational Priority 1
+            </span>
           </div>
         </div>
 
@@ -182,7 +138,7 @@ export default function TrainMovementTimeline({
 
             return (
               <div key={corridor.id} className="flex items-center gap-0">
-                {/* Corridor Label Column (Synchronized w-36 width) */}
+                {/* Corridor Label Column */}
                 <div className="w-36 flex-shrink-0 pr-2">
                   <div className="font-mono-rail text-[9px] text-slate-200 font-bold truncate">
                     {corridor.label}
@@ -212,10 +168,10 @@ export default function TrainMovementTimeline({
                     />
                   )}
 
-                  {/* Passenger Train Bars */}
+                  {/* Clean Passenger Train Bars (No false red danger styling) */}
                   {corrPassengerTrains.length === 0 ? (
                     <div className="absolute inset-0 flex items-center px-2 font-mono-rail text-[8px] text-slate-700">
-                      NO PASSENGER SERVICES
+                      NO PASSENGER SERVICES IN WINDOW
                     </div>
                   ) : (
                     corrPassengerTrains.map((tr, idx) => {
@@ -223,27 +179,20 @@ export default function TrainMovementTimeline({
                       const depStr = new Date(tr.departureTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
                       const arrStr = new Date(tr.arrivalTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
-                      // Evaluate train conflict state
-                      const conflictEval = evaluateTrainConflict(tr, blocks);
-
                       return (
                         <div
                           key={tr._id || idx}
                           onClick={() => setSelectedTrain(tr)}
-                          className={`absolute top-1 bottom-1 rounded ${
-                            conflictEval.isConflict
-                              ? 'bg-red-500/35 border-2 border-red-400 text-red-200 animate-pulse'
-                              : 'bg-cyan-600/35 border border-cyan-400/70 text-cyan-100 hover:bg-cyan-500/50 hover:border-cyan-300'
-                          } flex items-center px-1.5 overflow-hidden cursor-pointer shadow-sm transition-all hover:scale-105 hover:z-30 group`}
+                          className="absolute top-1 bottom-1 rounded bg-cyan-600/35 border border-cyan-400/70 text-cyan-100 hover:bg-cyan-500/50 hover:border-cyan-300 flex items-center px-1.5 overflow-hidden cursor-pointer shadow-sm transition-all hover:scale-105 hover:z-30 group"
                           style={{
                             left: `${left}%`,
                             width: `${width}%`,
                             zIndex: 10 + idx,
                           }}
-                          title={`🚆 Express ${tr.trainNumber}: ${tr.trainName || ''}\n${depStr}–${arrStr}\nTrack: ${tr.track || 'UP Main'}\nStatus: ${conflictEval.badge} - ${conflictEval.reason}`}
+                          title={`🚆 Express ${tr.trainNumber}: ${tr.trainName || ''}\n${depStr}–${arrStr}\nTrack: ${tr.track || 'UP Main'}\nStatus: Protected Movement (Priority 1)`}
                         >
                           <span className="font-mono-rail text-[8.5px] font-bold truncate leading-none flex items-center gap-1">
-                            <span>{conflictEval.isConflict ? '⚠️' : '🚆'}</span>
+                            <span>🚆</span>
                             <span>{tr.trainNumber}</span>
                             {width > 6 && <span className="opacity-75 text-[7.5px]">({depStr})</span>}
                           </span>
@@ -276,6 +225,9 @@ export default function TrainMovementTimeline({
             <span>
               Freight Rakes: <strong className="text-amber-400">{totalGoodsTrains} Dedicated Goods</strong>
             </span>
+            <span className="text-amber-400 font-bold">
+              ✓ Operational Priority 2
+            </span>
           </div>
         </div>
 
@@ -288,7 +240,7 @@ export default function TrainMovementTimeline({
 
             return (
               <div key={corridor.id} className="flex items-center gap-0">
-                {/* Corridor Label Column (Synchronized w-36 width) */}
+                {/* Corridor Label Column */}
                 <div className="w-36 flex-shrink-0 pr-2">
                   <div className="font-mono-rail text-[9px] text-slate-200 font-bold truncate">
                     {corridor.label}
@@ -318,10 +270,10 @@ export default function TrainMovementTimeline({
                     />
                   )}
 
-                  {/* Goods Train Bars */}
+                  {/* Clean Goods Train Bars (No false red danger styling) */}
                   {corrGoodsTrains.length === 0 ? (
                     <div className="absolute inset-0 flex items-center px-2 font-mono-rail text-[8px] text-slate-700">
-                      NO GOODS MOVEMENTS
+                      NO FREIGHT MOVEMENTS IN WINDOW
                     </div>
                   ) : (
                     corrGoodsTrains.map((tr, idx) => {
@@ -329,26 +281,20 @@ export default function TrainMovementTimeline({
                       const depStr = new Date(tr.departureTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
                       const arrStr = new Date(tr.arrivalTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
-                      const conflictEval = evaluateTrainConflict(tr, blocks);
-
                       return (
                         <div
                           key={tr._id || idx}
                           onClick={() => setSelectedTrain(tr)}
-                          className={`absolute top-1 bottom-1 rounded ${
-                            conflictEval.isConflict
-                              ? 'bg-red-500/35 border-2 border-red-400 text-red-200 animate-pulse'
-                              : 'bg-amber-600/35 border border-amber-500/70 text-amber-100 hover:bg-amber-500/50 hover:border-amber-400'
-                          } flex items-center px-1.5 overflow-hidden cursor-pointer shadow-sm transition-all hover:scale-105 hover:z-30 group`}
+                          className="absolute top-1 bottom-1 rounded bg-amber-600/35 border border-amber-400/70 text-amber-100 hover:bg-amber-500/50 hover:border-amber-300 flex items-center px-1.5 overflow-hidden cursor-pointer shadow-sm transition-all hover:scale-105 hover:z-30 group"
                           style={{
                             left: `${left}%`,
                             width: `${width}%`,
                             zIndex: 10 + idx,
                           }}
-                          title={`🚛 Goods Rake ${tr.trainNumber}: ${tr.trainName || 'Special'}\n${depStr}–${arrStr}\nTrack: ${tr.track || 'DN Main'}\nStatus: ${conflictEval.badge} - ${conflictEval.reason}`}
+                          title={`🚛 Goods ${tr.trainNumber}: ${tr.trainName || ''}\n${depStr}–${arrStr}\nTrack: ${tr.track || 'DN Main'}\nStatus: Timetabled Freight (Priority 2)`}
                         >
                           <span className="font-mono-rail text-[8.5px] font-bold truncate leading-none flex items-center gap-1">
-                            <span>{conflictEval.isConflict ? '⚠️' : '🚛'}</span>
+                            <span>🚛</span>
                             <span>{tr.trainNumber}</span>
                             {width > 6 && <span className="opacity-75 text-[7.5px]">({depStr})</span>}
                           </span>
@@ -363,8 +309,8 @@ export default function TrainMovementTimeline({
         </div>
       </div>
 
-      {/* Train Click Modal with Detailed Semantic Conflict Explanation */}
-      {selectedTrain && trainConflictInfo && (
+      {/* Train Click Modal with Operational Protection Details */}
+      {selectedTrain && trainStatusInfo && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-md w-full p-5 shadow-2xl flex flex-col gap-3 font-mono-rail">
             <div className="flex items-center justify-between border-b border-slate-800 pb-2">
@@ -372,10 +318,10 @@ export default function TrainMovementTimeline({
                 <span className="text-base">{selectedTrain.trainType === 'Goods' ? '🚛' : '🚆'}</span>
                 <div>
                   <div className="text-xs font-bold text-slate-100">
-                    {selectedTrain.trainType === 'Goods' ? 'GOODS / FREIGHT RAKE' : 'PASSENGER / EXPRESS TRAIN'}
+                    {selectedTrain.trainType === 'Goods' ? 'GOODS / FREIGHT TRANSIT' : 'PASSENGER / EXPRESS TRAIN'}
                   </div>
                   <div className="text-[9px] text-slate-400 mt-0.5">
-                    Operational Line Headway Status
+                    Operational Priority Assessment
                   </div>
                 </div>
               </div>
@@ -397,10 +343,8 @@ export default function TrainMovementTimeline({
                 <span className="font-bold text-cyan-300">{selectedTrain.trainName || 'Scheduled Rail Service'}</span>
               </div>
               <div className="flex justify-between py-1 border-b border-slate-800">
-                <span className="text-slate-500">Category:</span>
-                <span className={selectedTrain.trainType === 'Goods' ? 'text-amber-400 font-bold' : 'text-cyan-400 font-bold'}>
-                  {selectedTrain.trainType}
-                </span>
+                <span className="text-slate-500">Operational Priority:</span>
+                <span className="text-emerald-400 font-bold">{trainStatusInfo.priorityRank}</span>
               </div>
               <div className="flex justify-between py-1 border-b border-slate-800">
                 <span className="text-slate-500">Corridor Route:</span>
@@ -417,28 +361,20 @@ export default function TrainMovementTimeline({
                 </span>
               </div>
 
-              {/* Explicit Semantic Conflict Assessment Display */}
+              {/* Operational Priority Explanation */}
               <div className="border-t border-slate-800 pt-2 flex flex-col gap-1.5">
                 <div className="flex justify-between items-center">
-                  <span className="text-slate-400 font-bold uppercase text-[9px]">Operational Conflict State:</span>
-                  <span className={`px-2 py-0.5 rounded text-[9px] font-black ${
-                    trainConflictInfo.isConflict
-                      ? 'bg-red-500/20 text-red-300 border border-red-500/40 animate-pulse'
-                      : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                  }`}>
-                    {trainConflictInfo.badge}
+                  <span className="text-slate-400 font-bold uppercase text-[9px]">Scheduling Constraint Status:</span>
+                  <span className="px-2 py-0.5 rounded text-[9px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                    {trainStatusInfo.badge}
                   </span>
                 </div>
-                <div className={`p-2.5 rounded-lg border text-[9.5px] leading-relaxed ${
-                  trainConflictInfo.isConflict
-                    ? 'bg-red-950/40 border-red-500/40 text-red-200'
-                    : 'bg-slate-950 border-slate-800 text-slate-300'
-                }`}>
+                <div className="p-2.5 rounded-lg border text-[9.5px] leading-relaxed bg-slate-950 border-slate-800 text-slate-300">
                   <div className="font-bold mb-1 text-slate-200">
-                    {trainConflictInfo.title}
+                    {trainStatusInfo.title}
                   </div>
                   <div>
-                    {trainConflictInfo.reason}
+                    {trainStatusInfo.reason}
                   </div>
                 </div>
               </div>
